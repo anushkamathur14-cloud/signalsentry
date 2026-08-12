@@ -1,0 +1,44 @@
+churn:
+  rolling_window: 4
+  min_active_users: 3
+  usage_drop_pct: 0.30
+  usage_zscore: 2.0
+  seat_util_threshold: 0.35
+  admin_inactivity_days: 45
+  feature_adoption_drop_pct: 0.25
+  feature_slope_threshold: -0.04
+  high_severity_ticket_window: 4
+  high_severity_ticket_min: 3
+  nps_drop: 15
+  nps_absolute_low: 30
+  sudden_collapse_pct: 0.55
+  gradual_weeks: 6
+  suppress_benign_seasonal: true
+  seasonal_months: [6, 7, 12]
+  severity:
+    high_risk_score_floor: 75
+    medium_risk_score_floor: 50
+
+media:
+  rolling_window: 7
+  min_spend: 50
+  min_impressions: 500
+  min_clicks: 20
+  spend_spike_pct: 0.40
+  spend_zscore: 2.2
+  cpc_increase_pct: 0.35
+  cpm_increase_pct: 0.35
+  cvr_collapse_pct: 0.40
+  tracking_discrepancy_ratio: 1.8
+  budget_underspend_ratio: 0.55
+  frequency_fatigue: 4.5
+  duplicate_conversion_spike_pct: 0.80
+  suppress_weekends: true
+  suppress_benign_seasonal: true
+  seasonal_months: [11, 12]
+  severity:
+    high_zscore: 3.0
+    medium_zscore: 2.2
+
+evaluation:
+  date_tolerance_days: 14
