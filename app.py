@@ -134,36 +134,96 @@ def byok_sidebar() -> None:
             st.caption(f"Active: BYOK · {cfg.model_name}")
 
 
-def _inline_ask_panel(data, *, page_key: str, hint: str = "Ask about this page or the backend…") -> None:
-    """Compact Ask widget embedded on content pages (not a separate nav item)."""
-    with st.expander("Ask about this", expanded=False):
-        cfg = active_model_config()
-        mode = "mock" if cfg.use_mock else f"live · {cfg.model_name}"
-        st.caption(f"Path: `{cfg.path_label}` ({mode}). Key stays in the sidebar session only.")
+def ask_sidebar(data) -> None:
+    """Always-visible Ask box in the sidebar (no hunting on long pages)."""
+    st.sidebar.markdown("---")
+    st.sidebar.subheader("Ask me")
+    cfg = active_model_config()
+    st.sidebar.caption(
+        "Mock answers work with no key. For live LangChain, add a key under Live LangChain above."
+        if cfg.use_mock
+        else f"Live · `{cfg.model_name}`"
+    )
+    history_key = "ask_history_sidebar"
+    if history_key not in st.session_state:
+        st.session_state[history_key] = []
 
-        history_key = f"ask_history_{page_key}"
-        if history_key not in st.session_state:
-            st.session_state[history_key] = []
-
-        for msg in st.session_state[history_key]:
-            with st.chat_message(msg["role"]):
-                st.markdown(msg["content"])
-                if msg.get("trace"):
-                    with st.expander("LangChain trace"):
-                        _render_trace(msg["trace"])
-
-        prompt = st.chat_input(hint, key=f"ask_input_{page_key}")
-        if prompt:
-            st.session_state[history_key].append({"role": "user", "content": prompt})
-            context = {
-                "page": page_key,
-                "churn_alert_count": len(data.get("churn_alerts") or []),
-                "media_alert_count": len(data.get("media_alerts") or []),
-                "path_label": cfg.path_label,
-                "hosted": is_hosted_demo_environment(),
-            }
+    question = st.sidebar.text_area(
+        "Your question",
+        placeholder="e.g. How does LangChain talk to NemoClaw?",
+        height=80,
+        key="ask_sidebar_question",
+        label_visibility="collapsed",
+    )
+    if st.sidebar.button("Ask me", type="primary", use_container_width=True, key="ask_sidebar_btn"):
+        q = (question or "").strip()
+        if not q:
+            st.sidebar.warning("Type a question first.")
+        else:
             with st.spinner("Thinking…"):
-                answer, payload = ask_assistant(prompt, config=cfg, context=context)
+                answer, payload = ask_assistant(
+                    q,
+                    config=cfg,
+                    context={
+                        "page": "sidebar",
+                        "churn_alert_count": len(data.get("churn_alerts") or []),
+                        "media_alert_count": len(data.get("media_alerts") or []),
+                        "path_label": cfg.path_label,
+                        "hosted": is_hosted_demo_environment(),
+                    },
+                )
+            st.session_state[history_key].append({"q": q, "a": answer, "trace": payload.get("langchain_trace")})
+            st.rerun()
+
+    for turn in reversed(st.session_state[history_key][-3:]):
+        st.sidebar.markdown(f"**You:** {turn['q']}")
+        st.sidebar.markdown(turn["a"])
+        st.sidebar.markdown("---")
+
+
+def _inline_ask_panel(data, *, page_key: str, hint: str = "Ask about this page or the backend…") -> None:
+    """Visible Ask section on each content page (text box + button — not chat_input)."""
+    st.markdown("---")
+    st.subheader("Ask me")
+    cfg = active_model_config()
+    mode = "mock (no key needed)" if cfg.use_mock else f"live · {cfg.model_name}"
+    st.caption(f"Path: `{cfg.path_label}` · {mode}")
+
+    history_key = f"ask_history_{page_key}"
+    if history_key not in st.session_state:
+        st.session_state[history_key] = []
+
+    cols = st.columns([4, 1])
+    with cols[0]:
+        question = st.text_input(
+            "Question",
+            placeholder=hint,
+            key=f"ask_text_{page_key}",
+            label_visibility="collapsed",
+        )
+    with cols[1]:
+        asked = st.button("Ask me", type="primary", use_container_width=True, key=f"ask_btn_{page_key}")
+
+    if asked:
+        q = (question or "").strip()
+        if not q:
+            st.warning("Type a question first.")
+        else:
+            with st.spinner("Thinking…"):
+                answer, payload = ask_assistant(
+                    q,
+                    config=cfg,
+                    context={
+                        "page": page_key,
+                        "churn_alert_count": len(data.get("churn_alerts") or []),
+                        "media_alert_count": len(data.get("media_alerts") or []),
+                        "path_label": cfg.path_label,
+                        "hosted": is_hosted_demo_environment(),
+                    },
+                )
+            st.session_state[history_key].append(
+                {"role": "user", "content": q}
+            )
             st.session_state[history_key].append(
                 {
                     "role": "assistant",
@@ -172,6 +232,14 @@ def _inline_ask_panel(data, *, page_key: str, hint: str = "Ask about this page o
                 }
             )
             st.rerun()
+
+    for msg in st.session_state[history_key][-6:]:
+        with st.chat_message(msg["role"]):
+            st.markdown(msg["content"])
+            if msg.get("trace"):
+                with st.expander("LangChain trace"):
+                    _render_trace(msg["trace"])
+
 
 
 def _render_trace(trace: dict | None) -> None:
@@ -1185,7 +1253,7 @@ def structure_page(data):
             {"Page": "Campaign issues", "Purpose": "One media anomaly → English brief + chart/source"},
             {"Page": "How it works", "Purpose": "Full system map (this page) + optional live traces"},
             {"Page": "Privacy", "Purpose": "Synthetic-only confirmation, files read, audit log"},
-            {"Page": "Ask about this", "Purpose": "Embedded on each page (expander) — mock or BYOK LangChain"},
+            {"Page": "Ask me", "Purpose": "Always in the sidebar + at the bottom of each page"},
         ]
     )
     st.dataframe(pages, use_container_width=True, hide_index=True)
@@ -1392,6 +1460,7 @@ def main():
         st.code("python -m src.generation.generate_all\npython -m src.run_analysis", language="bash")
 
     data = _load_outputs()
+    ask_sidebar(data)
     churn_df, media_df, churn_gt, media_gt = _load_metrics()
 
     if page == "Home":
