@@ -54,24 +54,29 @@ def generate_churn_dataset(
     weeks = _week_starts(start, n_weeks)
     renewal_offsets = rng.integers(30, 360, size=n_accounts)
 
-    # Assign injection patterns to specific accounts (last few are controls / benign).
-    injection_plan: list[tuple[int, str, str]] = [
-        (0, "gradual_usage_decline", "high"),
-        (1, "low_seat_utilization", "medium"),
-        (2, "administrator_inactivity", "high"),
-        (3, "falling_feature_adoption", "medium"),
-        (4, "repeated_support_escalations", "high"),
-        (5, "negative_sentiment", "medium"),
-        (6, "sudden_usage_collapse", "critical"),
-        (7, "benign_seasonal_decline", "low"),
-        (8, "gradual_usage_decline", "medium"),
-        (9, "repeated_support_escalations", "medium"),
-        (10, "low_seat_utilization", "low"),
-        (11, "sudden_usage_collapse", "high"),
-        (12, "falling_feature_adoption", "high"),
-        (13, "administrator_inactivity", "medium"),
-        (14, "benign_seasonal_decline", "low"),
+    # Pattern catalog — assigned to random accounts per seed so each regen is a new world.
+    pattern_specs: list[tuple[str, str]] = [
+        ("gradual_usage_decline", "high"),
+        ("low_seat_utilization", "medium"),
+        ("administrator_inactivity", "high"),
+        ("falling_feature_adoption", "medium"),
+        ("repeated_support_escalations", "high"),
+        ("negative_sentiment", "medium"),
+        ("sudden_usage_collapse", "critical"),
+        ("benign_seasonal_decline", "low"),
+        ("gradual_usage_decline", "medium"),
+        ("repeated_support_escalations", "medium"),
+        ("low_seat_utilization", "low"),
+        ("sudden_usage_collapse", "high"),
+        ("falling_feature_adoption", "high"),
+        ("administrator_inactivity", "medium"),
+        ("benign_seasonal_decline", "low"),
     ]
+    n_inject = min(len(pattern_specs), n_accounts)
+    target_accounts = rng.choice(n_accounts, size=n_inject, replace=False)
+    injection_by_idx = {
+        int(acct): pattern_specs[i] for i, acct in enumerate(target_accounts)
+    }
 
     rows: list[dict[str, Any]] = []
     labels: list[ChurnInjection] = []
@@ -84,11 +89,8 @@ def generate_churn_dataset(
         noise_scale = float(rng.uniform(0.05, 0.12))
         pattern = None
         severity = "low"
-        for idx, pat, sev in injection_plan:
-            if idx == acct_idx:
-                pattern = pat
-                severity = sev
-                break
+        if acct_idx in injection_by_idx:
+            pattern, severity = injection_by_idx[acct_idx]
 
         inject_start_week = 28 if pattern else None
         if pattern == "benign_seasonal_decline":

@@ -2,36 +2,78 @@
 
 Local-first Python application for **customer churn early warning** and **paid-media campaign anomaly investigation**.
 
-Numerical anomalies are detected with deterministic Python. LangChain investigators explain, prioritize, and recommend actions — using a mock mode offline, or an OpenAI-compatible endpoint (including NVIDIA NemoClaw’s `https://inference.local/v1` route).
+**Primary path:** deterministic Python detectors → **live LangChain investigators** through NVIDIA **NemoClaw** (`https://inference.local/v1`) → Nemotron / OpenAI-compatible backend on the host.
 
-All data is **synthetic**. Recommendations are **advisory** and require human review. The app never changes campaigns or messages customers.
+Mock investigators exist only as an offline fallback (CI / Streamlit Community Cloud, where `inference.local` is unreachable).
+
+All data is **synthetic**. Recommendations are **advisory** and require human review.
 
 ## Architecture
 
 ```text
 Synthetic generators → Parquet/CSV + ground-truth labels
         ↓
-Deterministic detectors (YAML thresholds)
+Deterministic detectors (YAML thresholds)     ← no LLM for numbers
         ↓
 Candidate alerts
         ↓
-LangChain / mock investigators → Pydantic reports
+LangChain ChatOpenAI → NemoClaw inference.local → host Nemotron
         ↓
-Evaluation vs ground truth + Streamlit dashboard
+Pydantic investigation reports + Streamlit dashboard
 ```
 
 | Layer | Role |
 | --- | --- |
 | `src/generation/` | Seeded churn + media datasets and labeled injections |
 | `src/detection/` | Rolling baselines, z-scores, slopes, consistency checks |
-| `src/agents/` | Mock + LangChain structured-output investigators |
-| `src/models/` | Pydantic schemas + LLM client factory |
+| `src/agents/` | **Live LangChain** investigators (+ mock fallback) |
+| `src/models/` | Pydantic schemas + NemoClaw-compatible LLM client |
 | `src/evaluation/` | Precision / recall / F1 / FPR |
 | `src/privacy/` | File inventory, audit log, inference payload preview |
+| `src/verify_inference.py` | Live connectivity smoke test |
 | `app.py` | Streamlit UI |
-| `data/outputs/showcase/` | Portable JSON bundle for a future static/Vercel demo |
 
-## Quick start
+## Live NemoClaw + LangChain (intended use)
+
+1. Complete NemoClaw host onboarding so sandbox traffic to `inference.local` forwards to your Nemotron / compatible model.
+2. In the project (or sandbox copy):
+
+```bash
+cp .env.example .env
+# .env.example already sets live mode:
+# USE_MOCK_MODEL=false
+# MODEL_BASE_URL=https://inference.local/v1
+# MODEL_API_KEY=nemoclaw-local-placeholder
+# MODEL_NAME=nvidia/nemotron-mini
+```
+
+3. Run:
+
+```bash
+pip install -e ".[dev]"
+python -m src.generation.generate_all
+python -m src.verify_inference    # pings LangChain → inference.local
+python -m src.run_analysis        # live investigations
+streamlit run app.py
+```
+
+LangChain uses `ChatOpenAI(base_url=https://inference.local/v1)` + `with_structured_output` (Pydantic). The app never calls public provider domains directly; credentials stay on the NemoClaw/OpenShell host.
+
+If structured `json_schema` fails on your model build, set:
+
+```env
+STRUCTURED_OUTPUT_METHOD=json_mode
+```
+
+## Offline / Cloud fallback
+
+```env
+USE_MOCK_MODEL=true
+```
+
+Use this for pytest and [Streamlit Community Cloud](https://share.streamlit.io) demos. Cloud cannot reach `inference.local`.
+
+## Quick start (local package)
 
 Requires **Python 3.9+** (3.11+ preferred).
 
@@ -48,74 +90,31 @@ streamlit run app.py
 pytest
 ```
 
-Dashboard: [http://localhost:8501](http://localhost:8501)
-
 ### Streamlit Community Cloud demo
 
-Why Streamlit? The UI is a Streamlit app (`app.py`). Locally, `streamlit run app.py` opens that dashboard. For a **public demo**, deploy the same app to [Streamlit Community Cloud](https://share.streamlit.io):
-
-1. Open [share.streamlit.io](https://share.streamlit.io) and sign in with GitHub.
-2. **New app** → repo `anushkamathur14-cloud/signalsentry` → branch `main` → main file `app.py`.
-3. Deploy. First load generates synthetic data + mock investigations automatically (`USE_MOCK_MODEL=true`).
-4. Optional secrets (usually not required for the mock demo):
-
-```toml
-USE_MOCK_MODEL = "true"
-SEED = "42"
-```
-
-No live model key is needed for the demo. The cloud app does not call external providers unless you set `USE_MOCK_MODEL=false` and provide a compatible endpoint.
+1. [share.streamlit.io](https://share.streamlit.io) → New app → `anushkamathur14-cloud/signalsentry` → `app.py`
+2. First load auto-generates synthetic data with **mock** investigators
+3. For a live NemoClaw showcase, run Streamlit **inside** the NemoClaw environment instead of Community Cloud
 
 ## Model configuration
 
-Environment variables (see `.env.example`):
-
 | Variable | Purpose |
 | --- | --- |
-| `MODEL_BASE_URL` | OpenAI-compatible base URL |
-| `MODEL_API_KEY` | API key / NemoClaw placeholder |
-| `MODEL_NAME` | Model id |
-| `USE_MOCK_MODEL` | `true` = offline rule-based investigators |
-| `SEED` | Synthetic data seed (default `42`) |
-
-Default `.env` uses **mock mode** so the full pipeline works without network access.
-
-### Live OpenAI-compatible endpoint
-
-```env
-USE_MOCK_MODEL=false
-MODEL_BASE_URL=http://localhost:8000/v1
-MODEL_API_KEY=your-local-key
-MODEL_NAME=your-model-id
-```
-
-### NemoClaw + Nemotron
-
-Inside a NemoClaw sandbox, inference should target the managed route — **not** a public provider domain:
-
-```env
-USE_MOCK_MODEL=false
-MODEL_BASE_URL=https://inference.local/v1
-MODEL_API_KEY=nemoclaw-local-placeholder
-MODEL_NAME=nvidia/nemotron-mini
-```
-
-Notes:
-
-- Provider credentials stay on the host / OpenShell side; the app only talks to `inference.local`.
-- Use a non-sensitive placeholder key if the managed route expects an `Authorization` header.
-- No hard-coded cloud provider credentials are shipped with this project.
-- Complete NemoClaw onboarding on the host so `inference.local` forwards to your chosen Nemotron / compatible backend.
-
-LangChain usage here is intentionally thin: `ChatOpenAI` + `with_structured_output` over detector context. That matches NemoClaw’s OpenAI-compatible chat-completions path better than a heavy multi-agent graph for this product.
+| `MODEL_BASE_URL` | OpenAI-compatible base URL (`https://inference.local/v1` for NemoClaw) |
+| `MODEL_API_KEY` | Placeholder for the managed route (not a cloud provider secret) |
+| `MODEL_NAME` | Model id (e.g. `nvidia/nemotron-mini`) |
+| `USE_MOCK_MODEL` | `false` = live LangChain; `true` = offline mock |
+| `STRUCTURED_OUTPUT_METHOD` | `json_schema` (default) or `json_mode` |
+| `SEED` | Synthetic data seed |
 
 ## Commands
 
 ```bash
-python -m src.generation.generate_all   # write data/generated + data/ground_truth
-python -m src.run_analysis              # detect → investigate → evaluate → showcase JSON
-streamlit run app.py                    # dashboard
-pytest                                  # automated tests
+python -m src.generation.generate_all
+python -m src.verify_inference
+python -m src.run_analysis
+streamlit run app.py
+pytest
 ```
 
 ## Dashboard

@@ -4,19 +4,23 @@ from __future__ import annotations
 
 import json
 import os
+import secrets
 from pathlib import Path
 
 import pandas as pd
 import plotly.express as px
 import streamlit as st
 
-# Demo / Streamlit Cloud defaults: mock investigators, no live provider calls.
-os.environ.setdefault("USE_MOCK_MODEL", "true")
+# Demo defaults for Streamlit Community Cloud only.
+# Local / NemoClaw live mode is controlled by .env (USE_MOCK_MODEL=false).
+if os.getenv("STREAMLIT_SHARING_MODE") or os.getenv("STREAMLIT_RUNTIME_ENV"):
+    os.environ.setdefault("USE_MOCK_MODEL", "true")
 os.environ.setdefault("MODEL_BASE_URL", "https://inference.local/v1")
 os.environ.setdefault("MODEL_API_KEY", "nemoclaw-local-placeholder")
 os.environ.setdefault("MODEL_NAME", "nvidia/nemotron-mini")
 os.environ.setdefault("SEED", "42")
 
+from src.generation.generate_all import META_PATH, generate_all
 from src.models.llm import load_model_config
 from src.paths import GENERATED_DIR, GROUND_TRUTH_DIR, OUTPUTS_DIR, ROOT
 from src.privacy import (
@@ -24,6 +28,7 @@ from src.privacy import (
     read_investigation_log,
     synthetic_data_confirmation,
 )
+from src.run_analysis import run_analysis
 
 st.set_page_config(
     page_title="SignalSentry",
@@ -33,18 +38,89 @@ st.set_page_config(
 )
 
 
+def _read_generation_meta() -> dict:
+    if not META_PATH.exists():
+        return {}
+    try:
+        return json.loads(META_PATH.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return {}
+
+
 def ensure_demo_data() -> None:
-    """Generate synthetic data + mock analysis if outputs are missing (Streamlit Cloud cold start)."""
+    """Generate synthetic data + analysis if outputs are missing (Streamlit Cloud cold start)."""
     alerts_path = OUTPUTS_DIR / "churn_alerts.json"
     churn_path = GENERATED_DIR / "churn_metrics.parquet"
     if alerts_path.exists() and churn_path.exists():
         return
     with st.spinner("Preparing synthetic demo data (first run only)..."):
-        from src.generation.generate_all import generate_all
-        from src.run_analysis import run_analysis
-
         generate_all(seed=int(os.getenv("SEED", "42")))
         run_analysis(max_investigations=25)
+
+
+def regenerate_demo_world(
+    *,
+    seed: int,
+    n_accounts: int,
+    n_campaigns: int,
+    max_investigations: int,
+) -> None:
+    """Build a new synthetic world and re-run detect → investigate → evaluate."""
+    generate_all(seed=seed, n_accounts=n_accounts, n_campaigns=n_campaigns)
+    run_analysis(max_investigations=max_investigations)
+    _load_metrics.clear()
+
+
+def synthetic_data_sidebar() -> None:
+    """Controls to mint a fresh synthetic demo dataset on demand."""
+    st.sidebar.markdown("---")
+    st.sidebar.subheader("Synthetic data")
+    meta = _read_generation_meta()
+    if meta:
+        st.sidebar.caption(
+            f"Current world · seed `{meta.get('seed')}` · "
+            f"{meta.get('n_accounts')} accounts · {meta.get('n_campaigns')} campaigns"
+        )
+    else:
+        st.sidebar.caption("No generation metadata yet — cold start will create seed 42.")
+
+    if "demo_seed" not in st.session_state:
+        st.session_state.demo_seed = int(meta.get("seed") or os.getenv("SEED", "42"))
+
+    seed = st.sidebar.number_input(
+        "World seed",
+        min_value=0,
+        max_value=2_147_483_647,
+        value=int(st.session_state.demo_seed),
+        step=1,
+        help="Same seed → same demo world. New seed → different accounts/campaigns with injected anomalies.",
+    )
+    st.session_state.demo_seed = int(seed)
+
+    if st.sidebar.button("Random seed", use_container_width=True):
+        st.session_state.demo_seed = secrets.randbelow(1_000_000)
+        st.rerun()
+
+    n_accounts = st.sidebar.number_input(
+        "Accounts", min_value=20, max_value=200, value=int(meta.get("n_accounts") or 100)
+    )
+    n_campaigns = st.sidebar.number_input(
+        "Campaigns", min_value=15, max_value=80, value=int(meta.get("n_campaigns") or 40)
+    )
+    max_inv = st.sidebar.slider("Investigations to run", min_value=5, max_value=40, value=25)
+
+    if st.sidebar.button("Regenerate world + reanalyze", type="primary", use_container_width=True):
+        with st.spinner(
+            f"Generating synthetic world (seed={st.session_state.demo_seed}) and re-running analysis..."
+        ):
+            regenerate_demo_world(
+                seed=int(st.session_state.demo_seed),
+                n_accounts=int(n_accounts),
+                n_campaigns=int(n_campaigns),
+                max_investigations=int(max_inv),
+            )
+        st.sidebar.success(f"Fresh synthetic world ready (seed {st.session_state.demo_seed}).")
+        st.rerun()
 
 
 # Visual direction: cool slate + teal (avoid purple/cream AI clichés)
@@ -289,11 +365,25 @@ def privacy_page():
     cfg = load_model_config()
     confirm = synthetic_data_confirmation()
     st.success(confirm["message"])
+
+    if cfg.use_mock:
+        st.warning(
+            "Currently in **mock** mode (no LangChain model calls). "
+            "For live NemoClaw + LangChain set `USE_MOCK_MODEL=false` and "
+            "`MODEL_BASE_URL=https://inference.local/v1`, then re-run analysis."
+        )
+    else:
+        st.info(
+            f"**Live LangChain** → `{cfg.base_url}` · model `{cfg.model_name}` "
+            f"({'NemoClaw route' if cfg.is_nemoclaw_route else 'custom OpenAI-compatible endpoint'})."
+        )
+
     st.write(
         {
             "inference_destination": cfg.destination_label,
             "model_name": cfg.model_name,
-            "mock_or_real": "mock" if cfg.use_mock else "real",
+            "mode": "mock" if cfg.use_mock else "live-langchain",
+            "nemoclaw_route": cfg.is_nemoclaw_route,
             "synthetic_only": confirm["synthetic_only"],
         }
     )
@@ -314,13 +404,18 @@ def privacy_page():
 
 def main():
     st.sidebar.title("SignalSentry")
-    st.sidebar.caption("Synthetic demo · advisory recommendations only")
+    cfg = load_model_config()
+    if cfg.use_mock:
+        st.sidebar.caption("Mode: mock fallback · set USE_MOCK_MODEL=false for live NemoClaw")
+    else:
+        st.sidebar.caption(f"Mode: live LangChain → {cfg.base_url}")
     page = st.sidebar.radio(
         "Navigate",
         ["Overview", "Customer Churn Risks", "Campaign Anomalies", "Privacy and Safety"],
     )
     show_eval = st.sidebar.toggle("Evaluation toggle (show ground truth)", value=False)
     st.sidebar.caption(f"Project root: {ROOT}")
+    synthetic_data_sidebar()
 
     ensure_demo_data()
 

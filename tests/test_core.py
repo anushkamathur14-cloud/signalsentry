@@ -39,6 +39,15 @@ def test_media_reproducible_with_seed():
     pd.testing.assert_frame_equal(a, b)
 
 
+def test_different_seeds_produce_different_worlds():
+    a, a_truth = generate_churn_dataset(seed=42)
+    b, b_truth = generate_churn_dataset(seed=99)
+    assert not a.equals(b)
+    # Same anomaly types, different account assignment
+    assert set(a_truth["pattern"]) == set(b_truth["pattern"])
+    assert set(a_truth["account_id"]) != set(b_truth["account_id"])
+
+
 def test_ground_truth_contains_injected_patterns(churn_data, media_data):
     _, churn_truth = churn_data
     _, media_truth = media_data

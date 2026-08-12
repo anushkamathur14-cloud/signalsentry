@@ -3,12 +3,16 @@
 from __future__ import annotations
 
 import json
-from typing import Any
+from typing import Any, Type, TypeVar
+
+from pydantic import BaseModel
 
 from src.agents.mock import investigate_campaign_mock, investigate_churn_mock
 from src.models.llm import ModelConfig, build_chat_model, load_model_config
 from src.models.schemas import CampaignInvestigation, CandidateAlert, ChurnInvestigation
 from src.privacy.audit import append_investigation_log, build_inference_payload_preview
+
+T = TypeVar("T", bound=BaseModel)
 
 CHURN_SYSTEM = """You are a customer-success investigation assistant for SignalSentry.
 You receive detector alerts and optional metric summaries derived from SYNTHETIC data.
@@ -42,6 +46,46 @@ def _user_prompt(alert: CandidateAlert, metric_context: dict[str, Any] | None) -
     return json.dumps(payload, indent=2)
 
 
+def _invoke_structured(
+    *,
+    schema: Type[T],
+    system_prompt: str,
+    user_prompt: str,
+    config: ModelConfig,
+) -> T:
+    """
+    Live LangChain path via NemoClaw / OpenAI-compatible chat completions.
+
+    Tries json_schema structured output first, then json_mode for backends that
+    do not fully support tool/json_schema calling (common on some local Nemotron routes).
+    """
+    llm = build_chat_model(config)
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": user_prompt},
+    ]
+    methods = [config.structured_output_method]
+    for fallback in ("json_schema", "json_mode"):
+        if fallback not in methods:
+            methods.append(fallback)
+
+    last_error: Exception | None = None
+    for method in methods:
+        try:
+            structured = llm.with_structured_output(schema, method=method)
+            result = structured.invoke(messages)
+            if result is None:
+                raise RuntimeError(f"structured output returned None (method={method})")
+            return result  # type: ignore[return-value]
+        except Exception as exc:  # noqa: BLE001 - try next compatibility mode
+            last_error = exc
+            continue
+    raise RuntimeError(
+        f"Live LangChain investigation failed against {config.base_url} "
+        f"(model={config.model_name}). Last error: {last_error}"
+    )
+
+
 def investigate_churn(
     alert: CandidateAlert,
     metric_context: dict[str, Any] | None = None,
@@ -59,13 +103,11 @@ def investigate_churn(
     if cfg.use_mock:
         result = investigate_churn_mock(alert, metric_context)
     else:
-        llm = build_chat_model(cfg)
-        structured = llm.with_structured_output(ChurnInvestigation)
-        result = structured.invoke(
-            [
-                {"role": "system", "content": CHURN_SYSTEM},
-                {"role": "user", "content": user_prompt},
-            ]
+        result = _invoke_structured(
+            schema=ChurnInvestigation,
+            system_prompt=CHURN_SYSTEM,
+            user_prompt=user_prompt,
+            config=cfg,
         )
 
     append_investigation_log(
@@ -73,8 +115,9 @@ def investigate_churn(
             "domain": "churn",
             "entity_id": alert.entity_id,
             "alert_type": alert.alert_type,
-            "mode": "mock" if cfg.use_mock else "live",
+            "mode": "mock" if cfg.use_mock else "live-langchain",
             "destination": cfg.destination_label,
+            "nemoclaw_route": cfg.is_nemoclaw_route,
             "payload_preview": preview,
             "result": result.model_dump(mode="json"),
         }
@@ -99,13 +142,11 @@ def investigate_campaign(
     if cfg.use_mock:
         result = investigate_campaign_mock(alert, metric_context)
     else:
-        llm = build_chat_model(cfg)
-        structured = llm.with_structured_output(CampaignInvestigation)
-        result = structured.invoke(
-            [
-                {"role": "system", "content": MEDIA_SYSTEM},
-                {"role": "user", "content": user_prompt},
-            ]
+        result = _invoke_structured(
+            schema=CampaignInvestigation,
+            system_prompt=MEDIA_SYSTEM,
+            user_prompt=user_prompt,
+            config=cfg,
         )
 
     append_investigation_log(
@@ -113,8 +154,9 @@ def investigate_campaign(
             "domain": "media",
             "entity_id": alert.entity_id,
             "alert_type": alert.alert_type,
-            "mode": "mock" if cfg.use_mock else "live",
+            "mode": "mock" if cfg.use_mock else "live-langchain",
             "destination": cfg.destination_label,
+            "nemoclaw_route": cfg.is_nemoclaw_route,
             "payload_preview": preview,
             "result": result.model_dump(mode="json"),
         }

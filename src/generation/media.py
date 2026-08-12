@@ -34,23 +34,29 @@ def generate_media_dataset(
     start = start_date or date(2024, 7, 1)
     days = [start + timedelta(days=i) for i in range(n_days)]
 
-    injection_plan: list[tuple[int, str, str]] = [
-        (0, "spend_spike_no_conversion_growth", "high"),
-        (1, "cpc_increase", "medium"),
-        (2, "cpm_increase", "medium"),
-        (3, "conversion_rate_collapse", "high"),
-        (4, "tracking_discrepancy", "critical"),
-        (5, "budget_underspend", "medium"),
-        (6, "creative_fatigue", "high"),
-        (7, "geographic_performance_shift", "medium"),
-        (8, "duplicate_conversion_events", "high"),
-        (9, "benign_weekend_variation", "low"),
-        (10, "benign_seasonal_variation", "low"),
-        (11, "spend_spike_no_conversion_growth", "medium"),
-        (12, "conversion_rate_collapse", "medium"),
-        (13, "creative_fatigue", "medium"),
-        (14, "tracking_discrepancy", "high"),
+    # Pattern catalog — assigned to random campaigns per seed so each regen is a new world.
+    pattern_specs: list[tuple[str, str]] = [
+        ("spend_spike_no_conversion_growth", "high"),
+        ("cpc_increase", "medium"),
+        ("cpm_increase", "medium"),
+        ("conversion_rate_collapse", "high"),
+        ("tracking_discrepancy", "critical"),
+        ("budget_underspend", "medium"),
+        ("creative_fatigue", "high"),
+        ("geographic_performance_shift", "medium"),
+        ("duplicate_conversion_events", "high"),
+        ("benign_weekend_variation", "low"),
+        ("benign_seasonal_variation", "low"),
+        ("spend_spike_no_conversion_growth", "medium"),
+        ("conversion_rate_collapse", "medium"),
+        ("creative_fatigue", "medium"),
+        ("tracking_discrepancy", "high"),
     ]
+    n_inject = min(len(pattern_specs), n_campaigns)
+    target_campaigns = rng.choice(n_campaigns, size=n_inject, replace=False)
+    injection_by_idx = {
+        int(c_id): pattern_specs[i] for i, c_id in enumerate(target_campaigns)
+    }
 
     rows: list[dict[str, Any]] = []
     labels: list[CampaignInjection] = []
@@ -67,11 +73,8 @@ def generate_media_dataset(
 
         pattern = None
         severity = "low"
-        for idx, pat, sev in injection_plan:
-            if idx == c_i:
-                pattern = pat
-                severity = sev
-                break
+        if c_i in injection_by_idx:
+            pattern, severity = injection_by_idx[c_i]
 
         inject_start = 90
         if pattern == "benign_weekend_variation":
