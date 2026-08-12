@@ -29,7 +29,7 @@ os.environ.setdefault("SEED", "42")
 from src.agents.investigators import ask_assistant, investigate_churn
 from src.generation.generate_all import META_PATH, generate_all
 from src.models.schemas import CandidateAlert, Severity
-from src.paths import GENERATED_DIR, GROUND_TRUTH_DIR, OUTPUTS_DIR, ROOT
+from src.paths import GENERATED_DIR, GROUND_TRUTH_DIR, OUTPUTS_DIR
 from src.presentation import build_churn_briefing, build_media_briefing
 from src.privacy import (
     list_readable_files,
