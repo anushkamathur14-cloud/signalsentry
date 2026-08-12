@@ -48,6 +48,33 @@ def test_different_seeds_produce_different_worlds():
     assert set(a_truth["account_id"]) != set(b_truth["account_id"])
 
 
+def test_streamlit_cloud_env_forces_mock_even_if_live_requested(monkeypatch):
+    from src.models.llm import force_mock_if_hosted_demo, load_model_config
+
+    monkeypatch.setenv("STREAMLIT_CLOUD", "1")
+    monkeypatch.delenv("SIGNAL_SENTRY_FORCE_MOCK", raising=False)
+    monkeypatch.setenv("USE_MOCK_MODEL", "false")
+
+    assert force_mock_if_hosted_demo() is True
+    cfg = load_model_config()
+    assert cfg.use_mock is True
+
+
+def test_mount_src_cwd_forces_mock(monkeypatch):
+    from pathlib import Path
+
+    from src.models.llm import is_hosted_demo_environment
+
+    monkeypatch.delenv("STREAMLIT_SHARING_MODE", raising=False)
+    monkeypatch.delenv("STREAMLIT_RUNTIME_ENV", raising=False)
+    monkeypatch.delenv("STREAMLIT_CLOUD", raising=False)
+    monkeypatch.delenv("SIGNAL_SENTRY_FORCE_MOCK", raising=False)
+    monkeypatch.setattr(Path, "cwd", classmethod(lambda cls: Path("/mount/src/signalsentry")))
+    monkeypatch.setattr(Path, "is_dir", lambda self: str(self) == "/mount/src" or False)
+
+    assert is_hosted_demo_environment() is True
+
+
 def test_ground_truth_contains_injected_patterns(churn_data, media_data):
     _, churn_truth = churn_data
     _, media_truth = media_data

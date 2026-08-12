@@ -11,17 +11,18 @@ import pandas as pd
 import plotly.express as px
 import streamlit as st
 
-# Demo defaults for Streamlit Community Cloud only.
 # Local / NemoClaw live mode is controlled by .env (USE_MOCK_MODEL=false).
-if os.getenv("STREAMLIT_SHARING_MODE") or os.getenv("STREAMLIT_RUNTIME_ENV"):
-    os.environ.setdefault("USE_MOCK_MODEL", "true")
+# Streamlit Community Cloud cannot reach inference.local — force mock before any imports
+# that call load_model_config / dotenv.
+from src.models.llm import force_mock_if_hosted_demo, is_hosted_demo_environment, load_model_config
+
+force_mock_if_hosted_demo()
 os.environ.setdefault("MODEL_BASE_URL", "https://inference.local/v1")
 os.environ.setdefault("MODEL_API_KEY", "nemoclaw-local-placeholder")
 os.environ.setdefault("MODEL_NAME", "nvidia/nemotron-mini")
 os.environ.setdefault("SEED", "42")
 
 from src.generation.generate_all import META_PATH, generate_all
-from src.models.llm import load_model_config
 from src.paths import GENERATED_DIR, GROUND_TRUTH_DIR, OUTPUTS_DIR, ROOT
 from src.privacy import (
     list_readable_files,
@@ -405,8 +406,8 @@ def privacy_page():
 def main():
     st.sidebar.title("SignalSentry")
     cfg = load_model_config()
-    if cfg.use_mock:
-        st.sidebar.caption("Mode: mock fallback · set USE_MOCK_MODEL=false for live NemoClaw")
+    if cfg.use_mock or is_hosted_demo_environment():
+        st.sidebar.caption("Mode: mock demo (Streamlit Cloud / offline)")
     else:
         st.sidebar.caption(f"Mode: live LangChain → {cfg.base_url}")
     page = st.sidebar.radio(
