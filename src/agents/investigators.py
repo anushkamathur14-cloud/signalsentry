@@ -9,6 +9,7 @@ from typing import Any, Type, TypeVar
 
 from pydantic import BaseModel
 
+from src.agents.local_answers import answer_from_local_context, architecture_fallback
 from src.agents.mock import investigate_campaign_mock, investigate_churn_mock
 from src.agents.tracing import RunTrace, timed_step
 from src.models.llm import ModelConfig, build_chat_model, load_model_config
@@ -258,23 +259,35 @@ def ask_assistant(
     context: dict[str, Any] | None = None,
 ) -> tuple[str, dict[str, Any]]:
     """
-    Portfolio Q&A over the architecture. Live when config is non-mock; otherwise
-    returns a fixed explanation so Cloud demos never hang.
+    Portfolio Q&A. Prefers local demo-alert answers for flagged-issue questions.
+    Live LangChain when BYOK works; otherwise helpful local/mock fallback (no crash).
     """
     cfg = config or load_model_config()
     trace = _new_trace("assistant_chat", cfg)
     trace.add("user_question", question[:500], data={"context_keys": list((context or {}).keys())})
 
-    if cfg.use_mock:
-        answer = (
-            "SignalSentry's backend is: synthetic generators → YAML-threshold detectors → "
-            "LangChain `ChatOpenAI.with_structured_output` investigators. "
-            "Locally, LangChain talks to NemoClaw at `https://inference.local/v1` (OpenClaw "
-            "is the sandbox chat/gateway). On this hosted demo, investigations default to "
-            "mock templates. Paste your own NVIDIA API key in the sidebar (BYOK), pick a "
-            "public model, and ask again — or open Structure for the full system map."
+    local = answer_from_local_context(question, context)
+    if local and cfg.use_mock:
+        trace.add("local_demo_answer", "Answered from current synthetic alerts / architecture copy", status="mock")
+        trace.finish()
+        payload = {"answer": local, "langchain_trace": trace.to_dict(), "mode": "local-demo"}
+        append_investigation_log(
+            {
+                "domain": "assistant",
+                "entity_id": "portfolio-chat",
+                "alert_type": "local_qa",
+                "mode": "local-demo",
+                "destination": cfg.destination_label,
+                "path_label": cfg.path_label,
+                "result": {"answer": local},
+                "langchain_trace": trace.to_dict(),
+            }
         )
-        trace.add("mock_assistant_reply", "Returned architecture explanation without LLM", status="mock")
+        return local, payload
+
+    if cfg.use_mock:
+        answer = local or architecture_fallback()
+        trace.add("mock_assistant_reply", "Offline architecture fallback", status="mock")
         trace.finish()
         payload = {"answer": answer, "langchain_trace": trace.to_dict(), "mode": "mock"}
         append_investigation_log(
@@ -297,7 +310,16 @@ def ask_assistant(
         {
             "role": "user",
             "content": json.dumps(
-                {"question": question, "demo_context": context or {}, "instructions": "Answer briefly."},
+                {
+                    "question": question,
+                    "demo_context": {
+                        k: v
+                        for k, v in (context or {}).items()
+                        if k != "flagged_issues"
+                    },
+                    "flagged_issues_sample": (context or {}).get("flagged_issues", [])[:8],
+                    "instructions": "Answer briefly. Prefer the flagged_issues_sample when asked about alerts.",
+                },
                 indent=2,
             ),
         },
@@ -310,18 +332,30 @@ def ask_assistant(
     except Exception as exc:  # noqa: BLE001 - portfolio UX must not crash on bad model/key
         err = str(exc)
         trace.add("ChatOpenAI.invoke", f"failed: {err}", status="error")
+        # Still be useful: answer from local alerts if possible
+        useful = local or answer_from_local_context(question, context)
+        auth_hint = ""
+        if "401" in err or "Unauthorized" in err or "Authentication" in err:
+            auth_hint = (
+                "\n\n---\n**NVIDIA key tip:** 401 means the key was rejected. "
+                "In the sidebar → Live LangChain, re-paste a fresh `nvapi-…` key from "
+                "[build.nvidia.com](https://build.nvidia.com) (no spaces, no `Bearer ` prefix), "
+                "click **Use key**, then try again. Meanwhile here’s what I can still tell you from the demo data:\n"
+            )
+        else:
+            auth_hint = (
+                f"\n\n---\nLive call failed (`{cfg.model_name}`): {err}\n"
+                "Try another model in the sidebar, or clear the key to stay on mock.\n"
+            )
+        if useful:
+            answer = useful + auth_hint
+        else:
+            answer = architecture_fallback() + auth_hint
         trace.finish()
-        answer = (
-            f"Live LangChain call failed against `{cfg.base_url}` with model `{cfg.model_name}`.\n\n"
-            f"**Error:** {err}\n\n"
-            "Try another model in the sidebar (BYOK → Model), confirm the key is an `nvapi-…` "
-            "NVIDIA key from build.nvidia.com, then ask again. Until then, use Structure for "
-            "the system map — mock answers still work without a key."
-        )
         payload = {
             "answer": answer,
             "langchain_trace": trace.to_dict(),
-            "mode": "live-error",
+            "mode": "live-error-local-fallback",
             "error": err,
         }
         append_investigation_log(
@@ -329,7 +363,7 @@ def ask_assistant(
                 "domain": "assistant",
                 "entity_id": "portfolio-chat",
                 "alert_type": "architecture_qa",
-                "mode": "live-error",
+                "mode": "live-error-local-fallback",
                 "destination": cfg.destination_label,
                 "path_label": cfg.path_label,
                 "result": {"answer": answer, "error": err},

@@ -158,7 +158,10 @@ def byok_sidebar() -> None:
         )
         cols = st.columns(2)
         if cols[0].button("Use key", use_container_width=True):
-            st.session_state.byok_api_key = key.strip()
+            cleaned = key.strip()
+            if cleaned and not cleaned.replace(" ", "").startswith("nvapi-") and "nvapi-" not in cleaned:
+                st.warning("Key usually starts with `nvapi-`. Paste the full key from build.nvidia.com.")
+            st.session_state.byok_api_key = cleaned
             st.session_state.byok_model = model
             st.rerun()
         if cols[1].button("Clear key", use_container_width=True):
@@ -176,15 +179,61 @@ def byok_sidebar() -> None:
             st.caption(f"Active: BYOK · {cfg.model_name}")
 
 
+def _flagged_issues_context(data: dict) -> list[dict]:
+    """Compact issue list for Ask (local answers + live LLM context)."""
+    rows: list[dict] = []
+    inv_churn = {
+        row["alert"]["entity_id"] + "|" + row["alert"]["alert_type"]: row.get("investigation", {})
+        for row in data.get("churn_investigations") or []
+        if "alert" in row
+    }
+    inv_media = {
+        row["alert"]["entity_id"] + "|" + row["alert"]["alert_type"]: row.get("investigation", {})
+        for row in data.get("media_investigations") or []
+        if "alert" in row
+    }
+    for a in data.get("churn_alerts") or []:
+        key = a["entity_id"] + "|" + a["alert_type"]
+        brief = build_churn_briefing(a, inv_churn.get(key, {}))
+        rows.append(
+            {
+                "kind": "Account",
+                "domain": "churn",
+                "entity_id": a.get("entity_id"),
+                "severity": a.get("severity"),
+                "headline": brief.get("headline"),
+                "insight": brief.get("insight"),
+                "recommended_action": brief.get("recommended_action"),
+            }
+        )
+    for a in data.get("media_alerts") or []:
+        key = a["entity_id"] + "|" + a["alert_type"]
+        brief = build_media_briefing(a, inv_media.get(key, {}))
+        rows.append(
+            {
+                "kind": "Campaign",
+                "domain": "media",
+                "entity_id": a.get("entity_id"),
+                "severity": a.get("severity"),
+                "headline": brief.get("headline"),
+                "insight": brief.get("insight"),
+                "recommended_action": brief.get("recommended_action"),
+            }
+        )
+    sev_rank = {"critical": 0, "high": 1, "medium": 2, "low": 3}
+    rows.sort(key=lambda r: sev_rank.get(str(r.get("severity", "")).lower(), 9))
+    return rows
+
+
 def ask_sidebar(data) -> None:
     """Always-visible Ask box in the sidebar (no hunting on long pages)."""
     st.sidebar.markdown("---")
     st.sidebar.subheader("Ask me")
     cfg = active_model_config()
     st.sidebar.caption(
-        "Mock answers work with no key. For live LangChain, add a key under Live LangChain above."
+        "Works offline on demo alerts. Add a valid `nvapi-…` key above for live LangChain."
         if cfg.use_mock
-        else f"Live · `{cfg.model_name}`"
+        else f"Live · `{cfg.model_name}` (falls back to demo data if auth fails)"
     )
     history_key = "ask_history_sidebar"
     if history_key not in st.session_state:
@@ -192,7 +241,7 @@ def ask_sidebar(data) -> None:
 
     question = st.sidebar.text_area(
         "Your question",
-        placeholder="e.g. How does LangChain talk to NemoClaw?",
+        placeholder="e.g. Tell me about my critical flagged issues",
         height=80,
         key="ask_sidebar_question",
         label_visibility="collapsed",
@@ -212,6 +261,7 @@ def ask_sidebar(data) -> None:
                         "media_alert_count": len(data.get("media_alerts") or []),
                         "path_label": cfg.path_label,
                         "hosted": is_hosted_demo_environment(),
+                        "flagged_issues": _flagged_issues_context(data),
                     },
                 )
             st.session_state[history_key].append({"q": q, "a": answer, "trace": payload.get("langchain_trace")})
@@ -228,7 +278,7 @@ def _inline_ask_panel(data, *, page_key: str, hint: str = "Ask about this page o
     st.markdown("---")
     st.subheader("Ask me")
     cfg = active_model_config()
-    mode = "mock (no key needed)" if cfg.use_mock else f"live · {cfg.model_name}"
+    mode = "offline demo answers" if cfg.use_mock else f"live · {cfg.model_name}"
     st.caption(f"Path: `{cfg.path_label}` · {mode}")
 
     history_key = f"ask_history_{page_key}"
@@ -261,6 +311,7 @@ def _inline_ask_panel(data, *, page_key: str, hint: str = "Ask about this page o
                         "media_alert_count": len(data.get("media_alerts") or []),
                         "path_label": cfg.path_label,
                         "hosted": is_hosted_demo_environment(),
+                        "flagged_issues": _flagged_issues_context(data),
                     },
                 )
             st.session_state[history_key].append(

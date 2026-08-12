@@ -134,6 +134,16 @@ def load_model_config() -> ModelConfig:
     )
 
 
+def normalize_nvidia_api_key(raw: str) -> str:
+    """Strip common paste mistakes that cause 401 Unauthorized."""
+    key = (raw or "").strip().strip('"').strip("'")
+    if key.lower().startswith("bearer "):
+        key = key[7:].strip()
+    # Remove accidental whitespace/newlines from password managers
+    key = "".join(key.split())
+    return key
+
+
 def resolve_model_config(
     *,
     visitor_api_key: str | None = None,
@@ -148,7 +158,7 @@ def resolve_model_config(
       NVIDIA's public OpenAI-compatible endpoint (same client shape as NemoClaw).
     - Local NemoClaw: uses inference.local from .env when USE_MOCK_MODEL=false.
     """
-    key = (visitor_api_key or "").strip()
+    key = normalize_nvidia_api_key(visitor_api_key or "")
     if key:
         os.environ["SIGNAL_SENTRY_BYOK_ACTIVE"] = "1"
         os.environ["USE_MOCK_MODEL"] = "false"
@@ -182,12 +192,18 @@ def build_chat_model(config: ModelConfig | None = None):
     if cfg.use_mock:
         raise RuntimeError("build_chat_model called while mock mode is enabled")
 
-    return ChatOpenAI(
-        model=cfg.model_name,
-        api_key=cfg.api_key,
-        base_url=cfg.base_url,
-        temperature=0,
-        # Chat Completions path — NemoClaw's default OpenAI-compatible route.
-        timeout=120,
-        max_retries=2,
-    )
+    kwargs: dict = {
+        "model": cfg.model_name,
+        "api_key": cfg.api_key,
+        "base_url": cfg.base_url,
+        "temperature": 0,
+        "timeout": 120,
+        "max_retries": 1,
+    }
+    # NVIDIA hosted NIM expects a Bearer nvapi-… token.
+    if cfg.is_nvidia_public_route:
+        kwargs["default_headers"] = {
+            "Authorization": f"Bearer {cfg.api_key}",
+            "Accept": "application/json",
+        }
+    return ChatOpenAI(**kwargs)

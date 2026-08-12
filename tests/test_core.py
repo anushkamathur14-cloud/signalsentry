@@ -91,7 +91,29 @@ def test_ask_assistant_mock_includes_trace():
     answer, payload = ask_assistant("How does NemoClaw fit in?", config=cfg)
     assert "LangChain" in answer
     assert payload["langchain_trace"]["steps"]
-    assert payload["mode"] == "mock"
+    assert payload["mode"] in {"mock", "local-demo"}
+
+
+def test_local_answer_for_critical_flags():
+    from src.agents.local_answers import answer_from_local_context
+
+    ctx = {
+        "flagged_issues": [
+            {
+                "kind": "Account",
+                "entity_id": "ACC-001",
+                "severity": "critical",
+                "headline": "Usage dropped sharply",
+                "insight": "Sudden collapse",
+                "recommended_action": "Call today",
+            }
+        ]
+    }
+    answer = answer_from_local_context("Tell me more on my critical issues flagged", ctx)
+    assert answer is not None
+    assert "ACC-001" in answer
+    assert "critical" in answer.lower()
+
 
 
 def test_media_briefing_has_action_impact_steps():
