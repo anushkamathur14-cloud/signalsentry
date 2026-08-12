@@ -87,36 +87,33 @@ def active_model_config():
 
 def byok_sidebar() -> None:
     """Portfolio policy: your key is never required; visitors may bring their own."""
-    st.sidebar.markdown("---")
-    st.sidebar.subheader("Live LangChain (optional)")
-    st.sidebar.caption(
-        "Default demo is mock (no API spend). "
-        "Paste **your own** NVIDIA API key to run the real LangChain path. "
-        "The key stays in this browser session only — not written to the repo."
-    )
-    key = st.sidebar.text_input(
-        "NVIDIA API key (BYOK)",
-        type="password",
-        value=st.session_state.get("byok_api_key", ""),
-        help="Create a key at build.nvidia.com. Leave blank for mock investigators.",
-        key="byok_input",
-    )
-    cols = st.sidebar.columns(2)
-    if cols[0].button("Use key", use_container_width=True):
-        st.session_state.byok_api_key = key.strip()
-        st.rerun()
-    if cols[1].button("Clear key", use_container_width=True):
-        st.session_state.byok_api_key = ""
-        os.environ.pop("SIGNAL_SENTRY_BYOK_ACTIVE", None)
-        st.rerun()
-
-    cfg = active_model_config()
-    if cfg.use_mock:
-        st.sidebar.info("Path: **mock** · add BYOK key for live LangChain")
-    elif cfg.is_nemoclaw_route:
-        st.sidebar.success(f"Path: **NemoClaw** · `{cfg.model_name}`")
-    else:
-        st.sidebar.success(f"Path: **BYOK live** · `{cfg.model_name}`")
+    with st.sidebar.expander("Live LangChain (optional)", expanded=False):
+        st.caption(
+            "Default is mock (no API spend). Paste your own NVIDIA key for live LangChain. "
+            "Session-only — not saved to the repo."
+        )
+        key = st.text_input(
+            "NVIDIA API key (BYOK)",
+            type="password",
+            value=st.session_state.get("byok_api_key", ""),
+            help="Create a key at build.nvidia.com.",
+            key="byok_input",
+        )
+        cols = st.columns(2)
+        if cols[0].button("Use key", use_container_width=True):
+            st.session_state.byok_api_key = key.strip()
+            st.rerun()
+        if cols[1].button("Clear key", use_container_width=True):
+            st.session_state.byok_api_key = ""
+            os.environ.pop("SIGNAL_SENTRY_BYOK_ACTIVE", None)
+            st.rerun()
+        cfg = active_model_config()
+        if cfg.use_mock:
+            st.caption("Active: mock")
+        elif cfg.is_nemoclaw_route:
+            st.caption(f"Active: NemoClaw · {cfg.model_name}")
+        else:
+            st.caption(f"Active: BYOK · {cfg.model_name}")
 
 
 def _render_trace(trace: dict | None) -> None:
@@ -136,54 +133,46 @@ def _render_trace(trace: dict | None) -> None:
 
 def synthetic_data_sidebar() -> None:
     """Controls to mint a fresh synthetic demo dataset on demand."""
-    st.sidebar.markdown("---")
-    st.sidebar.subheader("Synthetic data")
     meta = _read_generation_meta()
-    if meta:
-        st.sidebar.caption(
-            f"Current world · seed `{meta.get('seed')}` · "
-            f"{meta.get('n_accounts')} accounts · {meta.get('n_campaigns')} campaigns"
-        )
-    else:
-        st.sidebar.caption("No generation metadata yet — cold start will create seed 42.")
-
     if "demo_seed" not in st.session_state:
         st.session_state.demo_seed = int(meta.get("seed") or os.getenv("SEED", "42"))
 
-    seed = st.sidebar.number_input(
-        "World seed",
-        min_value=0,
-        max_value=2_147_483_647,
-        value=int(st.session_state.demo_seed),
-        step=1,
-        help="Same seed → same demo world. New seed → different accounts/campaigns with injected anomalies.",
-    )
-    st.session_state.demo_seed = int(seed)
-
-    if st.sidebar.button("Random seed", use_container_width=True):
-        st.session_state.demo_seed = secrets.randbelow(1_000_000)
-        st.rerun()
-
-    n_accounts = st.sidebar.number_input(
-        "Accounts", min_value=20, max_value=200, value=int(meta.get("n_accounts") or 100)
-    )
-    n_campaigns = st.sidebar.number_input(
-        "Campaigns", min_value=15, max_value=80, value=int(meta.get("n_campaigns") or 40)
-    )
-    max_inv = st.sidebar.slider("Investigations to run", min_value=5, max_value=40, value=25)
-
-    if st.sidebar.button("Regenerate world + reanalyze", type="primary", use_container_width=True):
-        with st.spinner(
-            f"Generating synthetic world (seed={st.session_state.demo_seed}) and re-running analysis..."
-        ):
-            regenerate_demo_world(
-                seed=int(st.session_state.demo_seed),
-                n_accounts=int(n_accounts),
-                n_campaigns=int(n_campaigns),
-                max_investigations=int(max_inv),
+    with st.sidebar.expander("Advanced · demo data", expanded=False):
+        if meta:
+            st.caption(
+                f"Seed `{meta.get('seed')}` · {meta.get('n_accounts')} accounts · "
+                f"{meta.get('n_campaigns')} campaigns"
             )
-        st.sidebar.success(f"Fresh synthetic world ready (seed {st.session_state.demo_seed}).")
-        st.rerun()
+        seed = st.number_input(
+            "World seed",
+            min_value=0,
+            max_value=2_147_483_647,
+            value=int(st.session_state.demo_seed),
+            step=1,
+        )
+        st.session_state.demo_seed = int(seed)
+        if st.button("Random seed", use_container_width=True):
+            st.session_state.demo_seed = secrets.randbelow(1_000_000)
+            st.rerun()
+        n_accounts = st.number_input(
+            "Accounts", min_value=20, max_value=200, value=int(meta.get("n_accounts") or 100)
+        )
+        n_campaigns = st.number_input(
+            "Campaigns", min_value=15, max_value=80, value=int(meta.get("n_campaigns") or 40)
+        )
+        max_inv = st.slider("Investigations to run", min_value=5, max_value=40, value=25)
+        if st.button("Regenerate world", type="primary", use_container_width=True):
+            with st.spinner(
+                f"Generating world (seed={st.session_state.demo_seed}) and re-running analysis..."
+            ):
+                regenerate_demo_world(
+                    seed=int(st.session_state.demo_seed),
+                    n_accounts=int(n_accounts),
+                    n_campaigns=int(n_campaigns),
+                    max_investigations=int(max_inv),
+                )
+            st.success(f"Ready (seed {st.session_state.demo_seed}).")
+            st.rerun()
 
 
 # Visual direction: cool slate + teal (avoid purple/cream AI clichés)
@@ -237,6 +226,38 @@ st.markdown(
         font-size: 0.8rem;
         margin-bottom: 0.35rem;
       }
+      .ss-story {
+        background: linear-gradient(145deg, rgba(22,32,44,0.95), rgba(27,58,58,0.35));
+        border: 1px solid rgba(45, 212, 191, 0.35);
+        border-radius: 0.6rem;
+        padding: 1.15rem 1.25rem 0.4rem 1.25rem;
+        margin-bottom: 1rem;
+      }
+      .ss-story h2 {
+        margin: 0.15rem 0 0.75rem 0 !important;
+        font-size: 1.45rem !important;
+        color: #e8eef5 !important;
+      }
+      .ss-chip {
+        display: inline-block;
+        padding: 0.15rem 0.55rem;
+        border-radius: 999px;
+        font-size: 0.75rem;
+        margin-right: 0.35rem;
+        background: rgba(45, 212, 191, 0.15);
+        color: #2dd4bf;
+        border: 1px solid rgba(45, 212, 191, 0.35);
+      }
+      .ss-chip-warn {
+        background: rgba(251, 146, 60, 0.15);
+        color: #fdba74;
+        border-color: rgba(251, 146, 60, 0.35);
+      }
+      .ss-chip-crit {
+        background: rgba(248, 113, 113, 0.15);
+        color: #fca5a5;
+        border-color: rgba(248, 113, 113, 0.35);
+      }
     </style>
     """,
     unsafe_allow_html=True,
@@ -272,8 +293,8 @@ def _load_metrics():
 def overview_page(data, show_eval: bool):
     st.title("SignalSentry")
     st.markdown(
-        '<div class="ss-banner">Local-first early warning for customer churn and paid-media anomalies. '
-        "Recommendations are advisory and require human review.</div>",
+        '<div class="ss-banner">Early warning for churn and paid-media issues — '
+        "plain English first, numbers underneath. Recommendations need a human.</div>",
         unsafe_allow_html=True,
     )
 
@@ -281,51 +302,110 @@ def overview_page(data, show_eval: bool):
     media_alerts = data["media_alerts"]
     active = len(churn_alerts) + len(media_alerts)
 
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Active alerts", active)
-    c2.metric("Churn alerts", len(churn_alerts))
-    c3.metric("Campaign alerts", len(media_alerts))
-    mode = data.get("summary", {}).get("model_mode", load_model_config().destination_label)
-    c4.metric("Inference mode", str(mode))
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Things to review", active)
+    c2.metric("Account risks", len(churn_alerts))
+    c3.metric("Campaign issues", len(media_alerts))
 
-    sev_rows = []
-    for domain, alerts in [("churn", churn_alerts), ("media", media_alerts)]:
-        for a in alerts:
-            sev_rows.append({"domain": domain, "severity": a.get("severity", "unknown")})
-    if sev_rows:
-        sev_df = pd.DataFrame(sev_rows)
-        fig = px.histogram(
-            sev_df,
-            x="severity",
-            color="domain",
-            barmode="group",
-            title="Alerts by severity",
-            color_discrete_sequence=["#2dd4bf", "#38bdf8"],
+    st.subheader("Needs attention")
+    st.caption("Open Churn or Campaigns in the sidebar to act on one.")
+
+    inv_churn = {
+        row["alert"]["entity_id"] + "|" + row["alert"]["alert_type"]: row.get("investigation", {})
+        for row in data["churn_investigations"]
+        if "alert" in row
+    }
+    inv_media = {
+        row["alert"]["entity_id"] + "|" + row["alert"]["alert_type"]: row.get("investigation", {})
+        for row in data["media_investigations"]
+        if "alert" in row
+    }
+
+    spotlight = []
+    for a in churn_alerts:
+        brief = build_churn_briefing(a, inv_churn.get(a["entity_id"] + "|" + a["alert_type"], {}))
+        spotlight.append(
+            (
+                {"critical": 0, "high": 1, "medium": 2, "low": 3}.get(str(a.get("severity")).lower(), 9),
+                "Account",
+                a.get("entity_id"),
+                brief["headline"],
+                brief["recommended_action"],
+                a.get("severity"),
+            )
         )
-        fig.update_layout(paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", font_color="#e8eef5")
-        st.plotly_chart(fig, use_container_width=True)
+    for a in media_alerts:
+        brief = build_media_briefing(a, inv_media.get(a["entity_id"] + "|" + a["alert_type"], {}))
+        spotlight.append(
+            (
+                {"critical": 0, "high": 1, "medium": 2, "low": 3}.get(str(a.get("severity")).lower(), 9),
+                "Campaign",
+                a.get("entity_id"),
+                brief["headline"],
+                brief["recommended_action"],
+                a.get("severity"),
+            )
+        )
+    spotlight.sort(key=lambda r: r[0])
+    for _, kind, entity, headline, action, sev in spotlight[:6]:
+        st.markdown(
+            f'<div class="ss-brief"><h4>{kind} · {entity} · {sev}</h4>'
+            f"<p><b>{headline}</b></p><p>{action}</p></div>",
+            unsafe_allow_html=True,
+        )
+    if not spotlight:
+        st.info("No alerts yet — use Regenerate in the sidebar Advanced section if needed.")
 
-    # Churn risk distribution from investigations
-    risks = []
-    for row in data["churn_investigations"]:
-        inv = row.get("investigation", {})
-        risks.append({"account_id": inv.get("account_id"), "risk_score": inv.get("risk_score"), "risk_level": inv.get("risk_level")})
-    if risks:
-        rdf = pd.DataFrame(risks)
-        fig2 = px.histogram(rdf, x="risk_score", nbins=12, title="Churn risk score distribution", color_discrete_sequence=["#2dd4bf"])
-        fig2.update_layout(paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", font_color="#e8eef5")
-        st.plotly_chart(fig2, use_container_width=True)
+    with st.expander("Charts & distribution (optional)", expanded=False):
+        sev_rows = []
+        for domain, alerts in [("churn", churn_alerts), ("media", media_alerts)]:
+            for a in alerts:
+                sev_rows.append({"domain": domain, "severity": a.get("severity", "unknown")})
+        if sev_rows:
+            sev_df = pd.DataFrame(sev_rows)
+            fig = px.histogram(
+                sev_df,
+                x="severity",
+                color="domain",
+                barmode="group",
+                title="Alerts by severity",
+                color_discrete_sequence=["#2dd4bf", "#38bdf8"],
+            )
+            st.plotly_chart(_style_chart(fig), use_container_width=True)
 
-    type_rows = [{"alert_type": a.get("alert_type"), "count": 1} for a in media_alerts]
-    if type_rows:
-        tdf = pd.DataFrame(type_rows).groupby("alert_type", as_index=False).sum()
-        fig3 = px.bar(tdf, x="alert_type", y="count", title="Campaign anomalies by type", color_discrete_sequence=["#38bdf8"])
-        fig3.update_layout(paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", font_color="#e8eef5", xaxis_tickangle=-30)
-        st.plotly_chart(fig3, use_container_width=True)
+        risks = []
+        for row in data["churn_investigations"]:
+            inv = row.get("investigation", {})
+            risks.append(
+                {
+                    "account_id": inv.get("account_id"),
+                    "risk_score": inv.get("risk_score"),
+                }
+            )
+        if risks:
+            rdf = pd.DataFrame(risks)
+            fig2 = px.histogram(
+                rdf,
+                x="risk_score",
+                nbins=12,
+                title="Churn risk score distribution",
+                color_discrete_sequence=["#2dd4bf"],
+            )
+            st.plotly_chart(_style_chart(fig2), use_container_width=True)
 
     if show_eval and data["evaluation"]:
-        st.subheader("Detection performance vs synthetic ground truth")
-        st.json(data["evaluation"])
+        with st.expander("Evaluation vs ground truth", expanded=False):
+            st.json(data["evaluation"])
+
+
+def _severity_chip(severity: str) -> str:
+    sev = str(severity or "unknown").lower()
+    cls = "ss-chip"
+    if sev in {"high", "medium"}:
+        cls = "ss-chip ss-chip-warn"
+    if sev == "critical":
+        cls = "ss-chip ss-chip-crit"
+    return f'<span class="{cls}">{sev}</span>'
 
 
 def _brief_block(title: str, body: str) -> None:
@@ -345,37 +425,115 @@ def _brief_list(title: str, items: list) -> None:
     )
 
 
-def _render_briefing_panel(brief: dict) -> None:
+def _render_story_summary(brief: dict) -> None:
+    """Plain-English story first — what a CSM would say in a meeting."""
+    chips = (
+        f'{_severity_chip(brief.get("severity"))}'
+        f'<span class="ss-chip">{brief.get("entity_id")}</span>'
+        f'<span class="ss-chip">{brief.get("window")}</span>'
+    )
     st.markdown(
-        f'<div class="ss-kicker">{brief.get("window")} · '
-        f'severity <b>{brief.get("severity")}</b> · '
-        f'{brief.get("what_changed")}</div>',
+        f'<div class="ss-story">{chips}<h2>{brief.get("headline")}</h2></div>',
         unsafe_allow_html=True,
     )
-    st.markdown(f"### {brief.get('headline')}")
-    _brief_block("What's the anomaly", brief.get("insight") or "")
-    _brief_block("Opportunity", brief.get("opportunity") or "")
-    _brief_list("Diagnosis (hypotheses)", brief.get("diagnosis") or [])
+    _brief_block("What's going on", brief.get("insight") or "")
+    if brief.get("opportunity"):
+        _brief_block("Why it matters", brief.get("opportunity") or "")
     _brief_block("Recommended action", brief.get("recommended_action") or "")
-    _brief_list("Next steps", brief.get("next_steps") or [])
-    _brief_list("Expected impact (directional)", brief.get("expected_impact") or [])
-    _brief_list("Success metrics to watch", brief.get("success_metrics") or [])
-    _brief_list("Guardrails", brief.get("guardrails") or [])
-    conf = brief.get("confidence")
-    risk = brief.get("risk_score")
-    meta = []
-    if conf is not None:
-        meta.append(f"Confidence {float(conf):.0%}")
-    if risk is not None:
-        meta.append(f"Risk score {risk}")
+    cols = st.columns(2)
+    with cols[0]:
+        _brief_list("Next steps", brief.get("next_steps") or [])
+    with cols[1]:
+        _brief_list("Expected impact", brief.get("expected_impact") or [])
     if brief.get("immediate_review"):
-        meta.append("Immediate human review recommended")
-    if meta:
-        st.caption(" · ".join(meta))
-    if brief.get("data_limitations"):
-        with st.expander("Data confidence & limitations"):
+        st.error("Flag for immediate human review — advisory only; nothing is changed automatically.")
+
+
+def _render_technical_section(
+    *,
+    brief: dict,
+    alert: dict,
+    chart_factory,
+    extra_expanders: list | None = None,
+) -> None:
+    """Mechanics below the fold: chart math, detector payload, hypotheses."""
+    st.markdown("---")
+    with st.expander("Numbers & chart", expanded=False):
+        st.caption("Detector math and the trend behind the story.")
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Current", f"{float(alert.get('current_value') or 0):.2f}")
+        c2.metric("Expected", f"{float(alert.get('expected_value') or 0):.2f}")
+        c3.metric("Change", brief.get("what_changed") or "—")
+        chart_factory()
+
+    with st.expander("How the detector decided this", expanded=False):
+        st.write(
+            {
+                "alert_type": alert.get("alert_type"),
+                "metrics_involved": alert.get("metrics_involved"),
+                "supporting_calculations": alert.get("supporting_calculations"),
+                "window": brief.get("window"),
+            }
+        )
+        st.json(alert)
+
+    with st.expander("Hypotheses, metrics & confidence", expanded=False):
+        _brief_list("Diagnosis (hypotheses)", brief.get("diagnosis") or [])
+        _brief_list("Success metrics", brief.get("success_metrics") or [])
+        _brief_list("Guardrails", brief.get("guardrails") or [])
+        _brief_list("Evidence", brief.get("evidence") or [])
+        meta = []
+        if brief.get("confidence") is not None:
+            meta.append(f"Confidence {float(brief['confidence']):.0%}")
+        if brief.get("risk_score") is not None:
+            meta.append(f"Risk score {brief['risk_score']}")
+        if meta:
+            st.caption(" · ".join(meta))
+        if brief.get("data_limitations"):
+            st.markdown("**Data confidence**")
             for lim in brief["data_limitations"]:
                 st.write(f"- {lim}")
+
+    for title, render_fn in extra_expanders or []:
+        with st.expander(title, expanded=False):
+            render_fn()
+
+
+def _pick_alert(alerts: list[dict], inv_map: dict, builder, *, label: str) -> tuple[dict, dict, dict]:
+    """One human-readable dropdown + optional severity filter."""
+    severities = sorted({str(a.get("severity", "unknown")) for a in alerts})
+    filt = st.selectbox(
+        "Show severity",
+        options=["All"] + severities,
+        index=0,
+        help="Narrow the list when there are many alerts.",
+    )
+    filtered = alerts if filt == "All" else [a for a in alerts if str(a.get("severity")) == filt]
+    if not filtered:
+        filtered = alerts
+
+    options = []
+    for a in filtered:
+        key = a["entity_id"] + "|" + a["alert_type"]
+        inv = inv_map.get(key, {}).get("investigation", {})
+        brief = builder(a, inv)
+        sev = a.get("severity", "?")
+        options.append(
+            {
+                "key": key,
+                "label": f"{brief['headline']} · {a['entity_id']} ({sev})",
+                "alert": a,
+                "inv": inv,
+                "brief": brief,
+                "sort_sev": {"critical": 0, "high": 1, "medium": 2, "low": 3}.get(str(sev).lower(), 9),
+                "sort_risk": -(inv.get("risk_score") or 0),
+            }
+        )
+    options.sort(key=lambda o: (o["sort_sev"], o["sort_risk"], o["label"]))
+    labels = [o["label"] for o in options]
+    chosen = st.selectbox(label, labels, index=0)
+    row = options[labels.index(chosen)]
+    return row["alert"], row["inv"], row["brief"]
 
 
 def _style_chart(fig):
@@ -384,11 +542,13 @@ def _style_chart(fig):
         plot_bgcolor="rgba(0,0,0,0)",
         font_color="#e8eef5",
         legend_title_text="",
+        margin=dict(l=10, r=10, t=40, b=10),
+        height=360,
     )
     return fig
 
 
-def _add_anomaly_window(fig, start, end, label: str = "Anomaly window"):
+def _add_anomaly_window(fig, start, end, label: str = "Flagged window"):
     if not start or not end:
         return fig
     fig.add_vrect(
@@ -404,184 +564,134 @@ def _add_anomaly_window(fig, start, end, label: str = "Anomaly window"):
 
 
 def churn_page(data, churn_df, churn_gt, show_eval: bool):
-    st.title("Customer Churn Risks")
-    st.markdown(
-        '<div class="ss-banner">Pick an account to see the chart and a plain-language brief: '
-        "what broke, what to do next, and what impact to expect.</div>",
-        unsafe_allow_html=True,
-    )
+    st.title("Account risks")
+    st.caption("Read the summary. Open the sections below only if you want the numbers.")
+
+    alerts = data["churn_alerts"]
+    if not alerts:
+        st.info("No churn alerts yet. Use Regenerate demo data under Advanced in the sidebar.")
+        return
+
     inv_map = {
         row["alert"]["entity_id"] + "|" + row["alert"]["alert_type"]: row
         for row in data["churn_investigations"]
         if "alert" in row
     }
+    alert, _inv, brief = _pick_alert(
+        alerts, inv_map, build_churn_briefing, label="Pick a risk"
+    )
+    account = alert["entity_id"]
 
-    rows = []
-    for a in data["churn_alerts"]:
-        key = a["entity_id"] + "|" + a["alert_type"]
-        inv = inv_map.get(key, {}).get("investigation", {})
-        brief = build_churn_briefing(a, inv)
-        rows.append(
-            {
-                "account_id": a["entity_id"],
-                "alert_type": a["alert_type"],
-                "severity": a["severity"],
-                "plain_english": brief["headline"],
-                "risk_score": inv.get("risk_score"),
-                "confidence": inv.get("confidence"),
-                "current": a["current_value"],
-                "expected": a["expected_value"],
-            }
-        )
-    table = pd.DataFrame(rows)
-    if table.empty:
-        st.info("No churn alerts yet. Run `python -m src.run_analysis`.")
-        return
-    table = table.sort_values(["risk_score", "severity"], ascending=False, na_position="last")
-    st.dataframe(table, use_container_width=True)
+    _render_story_summary(brief)
 
-    account = st.selectbox("Account", options=list(dict.fromkeys(table["account_id"].tolist())))
-    account_alerts = [a for a in data["churn_alerts"] if a["entity_id"] == account]
-    alert_labels = [f"{a['alert_type']} ({a['severity']})" for a in account_alerts]
-    chosen = st.selectbox("Signal", alert_labels) if alert_labels else None
-    alert = account_alerts[alert_labels.index(chosen)] if chosen else account_alerts[0]
-    inv = inv_map.get(alert["entity_id"] + "|" + alert["alert_type"], {}).get("investigation", {})
-    brief = build_churn_briefing(alert, inv)
-
-    m1, m2, m3, m4 = st.columns(4)
-    m1.metric("Current", f"{float(alert['current_value']):.2f}")
-    m2.metric("Expected", f"{float(alert['expected_value']):.2f}")
-    m3.metric("Severity", str(alert.get("severity")))
-    m4.metric("Risk score", f"{brief.get('risk_score') if brief.get('risk_score') is not None else '—'}")
-
-    left, right = st.columns([1.15, 1])
-    with left:
-        st.subheader("Trend")
-        if not churn_df.empty:
-            hist = churn_df[churn_df["account_id"] == account].sort_values("date")
-            metrics = [m for m in (alert.get("metrics_involved") or []) if m in hist.columns]
-            if not metrics:
-                metrics = [c for c in ["weekly_sessions", "active_users", "key_feature_adoption", "nps_score"] if c in hist.columns]
-            fig = px.line(
-                hist,
-                x="date",
-                y=metrics,
-                title=f"{brief['headline']} — {account}",
-            )
-            fig = _add_anomaly_window(fig, alert.get("start_date"), alert.get("end_date"))
-            st.plotly_chart(_style_chart(fig), use_container_width=True)
-        else:
+    def _chart():
+        if churn_df.empty:
             st.info("No metric history loaded.")
-        with st.expander("Detector details (raw)"):
-            st.json(alert)
+            return
+        hist = churn_df[churn_df["account_id"] == account].sort_values("date")
+        metrics = [m for m in (alert.get("metrics_involved") or []) if m in hist.columns]
+        if not metrics:
+            metrics = [
+                c
+                for c in ["weekly_sessions", "active_users", "key_feature_adoption", "nps_score"]
+                if c in hist.columns
+            ]
+        fig = px.line(hist, x="date", y=metrics, title="Metric trend (flagged window shaded)")
+        fig = _add_anomaly_window(fig, alert.get("start_date"), alert.get("end_date"))
+        st.plotly_chart(_style_chart(fig), use_container_width=True)
 
-    with right:
-        st.subheader("Brief")
-        _render_briefing_panel(brief)
-
+    extras = []
     if show_eval and not churn_gt.empty:
-        st.subheader("Ground-truth label")
-        st.dataframe(churn_gt[churn_gt["account_id"] == account], use_container_width=True)
+        extras.append(
+            (
+                "Evaluation ground truth",
+                lambda: st.dataframe(
+                    churn_gt[churn_gt["account_id"] == account], use_container_width=True
+                ),
+            )
+        )
+
+    _render_technical_section(
+        brief=brief,
+        alert=alert,
+        chart_factory=_chart,
+        extra_expanders=extras,
+    )
 
 
 def media_page(data, media_df, media_gt, show_eval: bool):
-    st.title("Campaign Anomalies")
-    st.markdown(
-        '<div class="ss-banner">Media brief in plain English: anomaly → opportunity → '
-        "recommended action → next steps → expected impact (same shape as a CSM monthly review).</div>",
-        unsafe_allow_html=True,
-    )
-    rows = []
+    st.title("Campaign issues")
+    st.caption("Read the summary. Charts and detector math are folded underneath.")
+
+    alerts = data["media_alerts"]
+    if not alerts:
+        st.info("No campaign alerts yet. Use Regenerate demo data under Advanced in the sidebar.")
+        return
+
     inv_map = {
         row["alert"]["entity_id"] + "|" + row["alert"]["alert_type"]: row
         for row in data["media_investigations"]
         if "alert" in row
     }
-    for a in data["media_alerts"]:
-        key = a["entity_id"] + "|" + a["alert_type"]
-        inv = inv_map.get(key, {}).get("investigation", {})
-        brief = build_media_briefing(a, inv)
-        rows.append(
+    alert, _inv, brief = _pick_alert(
+        alerts, inv_map, build_media_briefing, label="Pick an issue"
+    )
+    campaign = alert["entity_id"]
+
+    _render_story_summary(brief)
+
+    def _chart():
+        if media_df.empty:
+            st.info("No metric history loaded.")
+            return
+        hist = media_df[media_df["campaign_id"] == campaign].sort_values("date")
+        metrics = [m for m in (alert.get("metrics_involved") or []) if m in hist.columns]
+        if not metrics:
+            metrics = [
+                c
+                for c in ["spend", "conversions", "cpc", "conversion_rate", "frequency"]
+                if c in hist.columns
+            ]
+        fig = px.line(
+            hist, x="date", y=metrics[:4], title="Campaign trend (flagged window shaded)"
+        )
+        fig = _add_anomaly_window(fig, alert.get("start_date"), alert.get("end_date"))
+        st.plotly_chart(_style_chart(fig), use_container_width=True)
+
+        primary = (alert.get("metrics_involved") or ["value"])[0]
+        cmp = pd.DataFrame(
             {
-                "campaign_id": a["entity_id"],
-                "alert_type": a["alert_type"],
-                "severity": a["severity"],
-                "plain_english": brief["headline"],
-                "current": a["current_value"],
-                "expected": a["expected_value"],
-                "confidence": inv.get("confidence"),
-                "immediate_review": inv.get("requires_immediate_human_review"),
+                "series": ["Expected", "Current"],
+                "value": [float(alert["expected_value"]), float(alert["current_value"])],
             }
         )
-    table = pd.DataFrame(rows)
-    if table.empty:
-        st.info("No campaign alerts yet. Run `python -m src.run_analysis`.")
-        return
-    st.dataframe(table.sort_values("severity"), use_container_width=True)
+        fig2 = px.bar(
+            cmp,
+            x="series",
+            y="value",
+            title=f"{primary.replace('_', ' ').title()} — expected vs current",
+            color="series",
+            color_discrete_sequence=["#38bdf8", "#2dd4bf"],
+        )
+        st.plotly_chart(_style_chart(fig2), use_container_width=True)
 
-    campaign = st.selectbox("Campaign", options=list(dict.fromkeys(table["campaign_id"].tolist())))
-    camp_alerts = [a for a in data["media_alerts"] if a["entity_id"] == campaign]
-    alert_labels = [f"{a['alert_type']} ({a['severity']})" for a in camp_alerts]
-    chosen = st.selectbox("Anomaly", alert_labels) if alert_labels else None
-    alert = camp_alerts[alert_labels.index(chosen)] if chosen else camp_alerts[0]
-    inv = inv_map.get(alert["entity_id"] + "|" + alert["alert_type"], {}).get("investigation", {})
-    brief = build_media_briefing(alert, inv)
-
-    m1, m2, m3, m4 = st.columns(4)
-    m1.metric("Current", f"{float(alert['current_value']):.2f}")
-    m2.metric("Expected", f"{float(alert['expected_value']):.2f}")
-    m3.metric("Severity", str(alert.get("severity")))
-    m4.metric("Delta", brief.get("what_changed", "—"))
-
-    left, right = st.columns([1.15, 1])
-    with left:
-        st.subheader("Trend")
-        if not media_df.empty:
-            hist = media_df[media_df["campaign_id"] == campaign].sort_values("date")
-            metrics = [m for m in (alert.get("metrics_involved") or []) if m in hist.columns]
-            if not metrics:
-                metrics = [c for c in ["spend", "conversions", "cpc", "conversion_rate", "frequency"] if c in hist.columns]
-            # Prefer a focused dual-axis style story when spend + conversions both present
-            fig = px.line(
-                hist,
-                x="date",
-                y=metrics[:4],
-                title=f"{brief['headline']} — {campaign}",
-            )
-            fig = _add_anomaly_window(fig, alert.get("start_date"), alert.get("end_date"))
-            st.plotly_chart(_style_chart(fig), use_container_width=True)
-
-            # Simple comparison bars for current vs expected on the primary metric
-            primary = (alert.get("metrics_involved") or ["value"])[0]
-            cmp = pd.DataFrame(
-                {
-                    "series": ["Expected", "Current"],
-                    "value": [float(alert["expected_value"]), float(alert["current_value"])],
-                }
-            )
-            fig2 = px.bar(
-                cmp,
-                x="series",
-                y="value",
-                title=f"{primary.replace('_', ' ').title()} — expected vs current",
-                color="series",
-                color_discrete_sequence=["#38bdf8", "#2dd4bf"],
-            )
-            st.plotly_chart(_style_chart(fig2), use_container_width=True)
-        else:
-            st.info("No metric history loaded.")
-        with st.expander("Detector details (raw)"):
-            st.json(alert)
-
-    with right:
-        st.subheader("Brief")
-        if brief.get("immediate_review"):
-            st.error("Immediate human review recommended — advisory only; no auto changes.")
-        _render_briefing_panel(brief)
-
+    extras = []
     if show_eval and not media_gt.empty:
-        st.subheader("Ground-truth label")
-        st.dataframe(media_gt[media_gt["campaign_id"] == campaign], use_container_width=True)
+        extras.append(
+            (
+                "Evaluation ground truth",
+                lambda: st.dataframe(
+                    media_gt[media_gt["campaign_id"] == campaign], use_container_width=True
+                ),
+            )
+        )
+
+    _render_technical_section(
+        brief=brief,
+        alert=alert,
+        chart_factory=_chart,
+        extra_expanders=extras,
+    )
 
 
 def backend_traces_page(data):
@@ -757,34 +867,29 @@ def main():
     if "byok_api_key" not in st.session_state:
         st.session_state.byok_api_key = ""
 
-    byok_sidebar()
     cfg = active_model_config()
-    if cfg.use_mock:
-        st.sidebar.caption("Mode: mock demo — optional BYOK for live LangChain")
-    elif cfg.is_nemoclaw_route:
-        st.sidebar.caption(f"Mode: live NemoClaw → {cfg.base_url}")
-    else:
-        st.sidebar.caption(f"Mode: live BYOK → {cfg.base_url}")
+    st.sidebar.caption("Mock demo" if cfg.use_mock else f"Live · {cfg.path_label}")
 
     page = st.sidebar.radio(
-        "Navigate",
+        "Go to",
         [
             "Overview",
-            "Customer Churn Risks",
-            "Campaign Anomalies",
-            "Backend & Traces",
-            "Ask SignalSentry",
-            "Privacy and Safety",
+            "Account risks",
+            "Campaign issues",
+            "How it works",
+            "Ask",
+            "Privacy",
         ],
     )
-    show_eval = st.sidebar.toggle("Evaluation toggle (show ground truth)", value=False)
-    st.sidebar.caption(f"Project root: {ROOT}")
+    byok_sidebar()
+    with st.sidebar.expander("Developer options", expanded=False):
+        show_eval = st.toggle("Show ground truth", value=False)
     synthetic_data_sidebar()
 
     ensure_demo_data()
 
     if not (OUTPUTS_DIR / "churn_alerts.json").exists():
-        st.warning("No analysis outputs found. Run dataset generation and analysis first.")
+        st.warning("No analysis outputs found yet.")
         st.code("python -m src.generation.generate_all\npython -m src.run_analysis", language="bash")
 
     data = _load_outputs()
@@ -792,13 +897,13 @@ def main():
 
     if page == "Overview":
         overview_page(data, show_eval)
-    elif page == "Customer Churn Risks":
+    elif page == "Account risks":
         churn_page(data, churn_df, churn_gt, show_eval)
-    elif page == "Campaign Anomalies":
+    elif page == "Campaign issues":
         media_page(data, media_df, media_gt, show_eval)
-    elif page == "Backend & Traces":
+    elif page == "How it works":
         backend_traces_page(data)
-    elif page == "Ask SignalSentry":
+    elif page == "Ask":
         ask_page(data)
     else:
         privacy_page()
