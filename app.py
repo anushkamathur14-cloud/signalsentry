@@ -458,7 +458,7 @@ def _render_technical_section(
 ) -> None:
     """Mechanics below the fold: chart math, detector payload, hypotheses."""
     st.markdown("---")
-    with st.expander("Numbers & chart", expanded=False):
+    with st.expander("Numbers & chart — click a point for source", expanded=True):
         st.caption("Detector math and the trend behind the story.")
         c1, c2, c3 = st.columns(3)
         c1.metric("Current", f"{float(alert.get('current_value') or 0):.2f}")
@@ -544,6 +544,8 @@ def _style_chart(fig):
         legend_title_text="",
         margin=dict(l=10, r=10, t=40, b=10),
         height=360,
+        clickmode="event+select",
+        dragmode="select",
     )
     return fig
 
@@ -561,6 +563,130 @@ def _add_anomaly_window(fig, start, end, label: str = "Flagged window"):
         annotation_font_color="#93a4b5",
     )
     return fig
+
+
+def _selection_points(event) -> list[dict]:
+    if event is None:
+        return []
+    selection = getattr(event, "selection", None)
+    if selection is None and isinstance(event, dict):
+        selection = event.get("selection") or event.get("select")
+    if selection is None:
+        return []
+    points = getattr(selection, "points", None)
+    if points is None and isinstance(selection, dict):
+        points = selection.get("points")
+    return list(points or [])
+
+
+def _match_source_rows(
+    source_df: pd.DataFrame, points: list[dict], *, date_col: str = "date"
+) -> pd.DataFrame:
+    """Map Plotly selection points back to underlying dataframe rows."""
+    if source_df.empty or not points:
+        return pd.DataFrame()
+
+    work = source_df.copy().reset_index(drop=True)
+    if date_col in work.columns and date_col.lower() in {"date", "day", "week", "timestamp"}:
+        work["_date_key"] = pd.to_datetime(work[date_col], errors="coerce").dt.strftime("%Y-%m-%d")
+
+    matched_idx: set[int] = set()
+    for pt in points:
+        custom = pt.get("customdata")
+        if isinstance(custom, (list, tuple)) and custom:
+            try:
+                matched_idx.add(int(custom[0]))
+                continue
+            except (TypeError, ValueError):
+                pass
+
+        x_val = pt.get("x")
+        if x_val is not None and "_date_key" in work.columns:
+            try:
+                x_key = pd.to_datetime(x_val).strftime("%Y-%m-%d")
+            except (TypeError, ValueError):
+                x_key = str(x_val)[:10]
+            hits = work.index[work["_date_key"] == x_key].tolist()
+            if hits:
+                matched_idx.update(int(i) for i in hits)
+                continue
+
+        if x_val is not None and date_col in work.columns:
+            hits = work.index[work[date_col].astype(str) == str(x_val)].tolist()
+            if hits:
+                matched_idx.update(int(i) for i in hits)
+                continue
+
+        if x_val is not None:
+            for col in work.columns:
+                if work[col].dtype == object or str(work[col].dtype).startswith("string"):
+                    hits = work.index[work[col].astype(str) == str(x_val)].tolist()
+                    if hits:
+                        matched_idx.update(int(i) for i in hits)
+                        break
+
+    if not matched_idx:
+        return pd.DataFrame()
+    out = work.loc[sorted(matched_idx)].drop(columns=["_date_key"], errors="ignore")
+    return out.reset_index(drop=True)
+
+
+def _attach_row_index_customdata(fig, n_rows: int) -> None:
+    """Stamp each trace point with its dataframe row index for click→source mapping."""
+    for trace in fig.data:
+        if getattr(trace, "x", None) is None:
+            continue
+        n = len(trace.x)
+        trace.customdata = [[i] for i in range(min(n, n_rows))]
+        if not getattr(trace, "hovertemplate", None):
+            trace.hovertemplate = (
+                "%{x}<br>%{y}<br>row=%{customdata[0]}<extra>%{fullData.name}</extra>"
+            )
+
+
+def _plotly_with_source(
+    fig,
+    source_df: pd.DataFrame,
+    *,
+    key: str,
+    date_col: str = "date",
+    source_label: str = "Source rows for selection",
+) -> None:
+    """Render a Plotly chart; clicking/selecting points reveals underlying source data."""
+    st.caption("Click a point (or box/lasso-select) to inspect the source data behind it.")
+    _attach_row_index_customdata(fig, len(source_df))
+    event = st.plotly_chart(
+        _style_chart(fig),
+        use_container_width=True,
+        on_select="rerun",
+        selection_mode=("points", "box", "lasso"),
+        key=key,
+    )
+    points = _selection_points(event)
+    if not points:
+        return
+
+    st.markdown(f"**{source_label}**")
+    clicked = [
+        {
+            "x": pt.get("x"),
+            "y": pt.get("y"),
+            "series": pt.get("legendgroup") or pt.get("curve_number"),
+        }
+        for pt in points[:12]
+    ]
+    st.dataframe(pd.DataFrame(clicked), use_container_width=True, hide_index=True)
+
+    rows = _match_source_rows(source_df, points, date_col=date_col)
+    if rows.empty:
+        st.info("Could not map that click to a source row — try another point.")
+        with st.expander("Raw selection payload"):
+            st.json(points)
+        return
+
+    st.dataframe(rows, use_container_width=True, hide_index=True)
+    with st.expander("Raw selection payload"):
+        st.json(points)
 
 
 def churn_page(data, churn_df, churn_gt, show_eval: bool):
@@ -588,7 +714,7 @@ def churn_page(data, churn_df, churn_gt, show_eval: bool):
         if churn_df.empty:
             st.info("No metric history loaded.")
             return
-        hist = churn_df[churn_df["account_id"] == account].sort_values("date")
+        hist = churn_df[churn_df["account_id"] == account].sort_values("date").reset_index(drop=True)
         metrics = [m for m in (alert.get("metrics_involved") or []) if m in hist.columns]
         if not metrics:
             metrics = [
@@ -598,7 +724,12 @@ def churn_page(data, churn_df, churn_gt, show_eval: bool):
             ]
         fig = px.line(hist, x="date", y=metrics, title="Metric trend (flagged window shaded)")
         fig = _add_anomaly_window(fig, alert.get("start_date"), alert.get("end_date"))
-        st.plotly_chart(_style_chart(fig), use_container_width=True)
+        _plotly_with_source(
+            fig,
+            hist,
+            key=f"churn_trend_{account}_{alert.get('alert_type')}",
+            source_label=f"Source metric rows · {account}",
+        )
 
     extras = []
     if show_eval and not churn_gt.empty:
@@ -644,7 +775,7 @@ def media_page(data, media_df, media_gt, show_eval: bool):
         if media_df.empty:
             st.info("No metric history loaded.")
             return
-        hist = media_df[media_df["campaign_id"] == campaign].sort_values("date")
+        hist = media_df[media_df["campaign_id"] == campaign].sort_values("date").reset_index(drop=True)
         metrics = [m for m in (alert.get("metrics_involved") or []) if m in hist.columns]
         if not metrics:
             metrics = [
@@ -656,13 +787,27 @@ def media_page(data, media_df, media_gt, show_eval: bool):
             hist, x="date", y=metrics[:4], title="Campaign trend (flagged window shaded)"
         )
         fig = _add_anomaly_window(fig, alert.get("start_date"), alert.get("end_date"))
-        st.plotly_chart(_style_chart(fig), use_container_width=True)
+        _plotly_with_source(
+            fig,
+            hist,
+            key=f"media_trend_{campaign}_{alert.get('alert_type')}",
+            source_label=f"Source daily rows · {campaign}",
+        )
 
         primary = (alert.get("metrics_involved") or ["value"])[0]
         cmp = pd.DataFrame(
             {
                 "series": ["Expected", "Current"],
                 "value": [float(alert["expected_value"]), float(alert["current_value"])],
+                "metric": [primary, primary],
+                "campaign_id": [campaign, campaign],
+                "alert_type": [alert.get("alert_type"), alert.get("alert_type")],
+                "window_start": [alert.get("start_date"), alert.get("start_date")],
+                "window_end": [alert.get("end_date"), alert.get("end_date")],
+                "supporting_calculations": [
+                    str(alert.get("supporting_calculations")),
+                    str(alert.get("supporting_calculations")),
+                ],
             }
         )
         fig2 = px.bar(
@@ -673,7 +818,13 @@ def media_page(data, media_df, media_gt, show_eval: bool):
             color="series",
             color_discrete_sequence=["#38bdf8", "#2dd4bf"],
         )
-        st.plotly_chart(_style_chart(fig2), use_container_width=True)
+        _plotly_with_source(
+            fig2,
+            cmp,
+            key=f"media_bar_{campaign}_{alert.get('alert_type')}",
+            date_col="series",
+            source_label="Source for expected vs current",
+        )
 
     extras = []
     if show_eval and not media_gt.empty:
