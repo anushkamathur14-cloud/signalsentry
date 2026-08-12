@@ -30,6 +30,7 @@ from src.agents.investigators import ask_assistant, investigate_churn
 from src.generation.generate_all import META_PATH, generate_all
 from src.models.schemas import CandidateAlert, Severity
 from src.paths import GENERATED_DIR, GROUND_TRUTH_DIR, OUTPUTS_DIR, ROOT
+from src.presentation import build_churn_briefing, build_media_briefing
 from src.privacy import (
     list_readable_files,
     read_investigation_log,
@@ -211,6 +212,31 @@ st.markdown(
         margin-bottom: 1rem;
         color: #c9d6e3;
       }
+      .ss-brief {
+        background: rgba(22, 32, 44, 0.92);
+        border: 1px solid rgba(45, 212, 191, 0.28);
+        border-radius: 0.5rem;
+        padding: 1rem 1.1rem;
+        margin-bottom: 0.85rem;
+      }
+      .ss-brief h4 {
+        margin: 0 0 0.35rem 0;
+        color: #2dd4bf;
+        font-size: 0.85rem;
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+      }
+      .ss-brief p, .ss-brief li {
+        color: #e8eef5;
+        font-size: 0.95rem;
+        line-height: 1.45;
+      }
+      .ss-brief ul { margin: 0.25rem 0 0 1.1rem; padding: 0; }
+      .ss-kicker {
+        color: #93a4b5;
+        font-size: 0.8rem;
+        margin-bottom: 0.35rem;
+      }
     </style>
     """,
     unsafe_allow_html=True,
@@ -302,8 +328,88 @@ def overview_page(data, show_eval: bool):
         st.json(data["evaluation"])
 
 
+def _brief_block(title: str, body: str) -> None:
+    st.markdown(
+        f'<div class="ss-brief"><h4>{title}</h4><p>{body}</p></div>',
+        unsafe_allow_html=True,
+    )
+
+
+def _brief_list(title: str, items: list) -> None:
+    if not items:
+        return
+    lis = "".join(f"<li>{item}</li>" for item in items)
+    st.markdown(
+        f'<div class="ss-brief"><h4>{title}</h4><ul>{lis}</ul></div>',
+        unsafe_allow_html=True,
+    )
+
+
+def _render_briefing_panel(brief: dict) -> None:
+    st.markdown(
+        f'<div class="ss-kicker">{brief.get("window")} · '
+        f'severity <b>{brief.get("severity")}</b> · '
+        f'{brief.get("what_changed")}</div>',
+        unsafe_allow_html=True,
+    )
+    st.markdown(f"### {brief.get('headline')}")
+    _brief_block("What's the anomaly", brief.get("insight") or "")
+    _brief_block("Opportunity", brief.get("opportunity") or "")
+    _brief_list("Diagnosis (hypotheses)", brief.get("diagnosis") or [])
+    _brief_block("Recommended action", brief.get("recommended_action") or "")
+    _brief_list("Next steps", brief.get("next_steps") or [])
+    _brief_list("Expected impact (directional)", brief.get("expected_impact") or [])
+    _brief_list("Success metrics to watch", brief.get("success_metrics") or [])
+    _brief_list("Guardrails", brief.get("guardrails") or [])
+    conf = brief.get("confidence")
+    risk = brief.get("risk_score")
+    meta = []
+    if conf is not None:
+        meta.append(f"Confidence {float(conf):.0%}")
+    if risk is not None:
+        meta.append(f"Risk score {risk}")
+    if brief.get("immediate_review"):
+        meta.append("Immediate human review recommended")
+    if meta:
+        st.caption(" · ".join(meta))
+    if brief.get("data_limitations"):
+        with st.expander("Data confidence & limitations"):
+            for lim in brief["data_limitations"]:
+                st.write(f"- {lim}")
+
+
+def _style_chart(fig):
+    fig.update_layout(
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        font_color="#e8eef5",
+        legend_title_text="",
+    )
+    return fig
+
+
+def _add_anomaly_window(fig, start, end, label: str = "Anomaly window"):
+    if not start or not end:
+        return fig
+    fig.add_vrect(
+        x0=start,
+        x1=end,
+        fillcolor="rgba(45, 212, 191, 0.12)",
+        line_width=0,
+        annotation_text=label,
+        annotation_position="top left",
+        annotation_font_color="#93a4b5",
+    )
+    return fig
+
+
 def churn_page(data, churn_df, churn_gt, show_eval: bool):
     st.title("Customer Churn Risks")
+    st.markdown(
+        '<div class="ss-banner">Pick an account to see the chart and a plain-language brief: '
+        "what broke, what to do next, and what impact to expect.</div>",
+        unsafe_allow_html=True,
+    )
     inv_map = {
         row["alert"]["entity_id"] + "|" + row["alert"]["alert_type"]: row
         for row in data["churn_investigations"]
@@ -314,11 +420,13 @@ def churn_page(data, churn_df, churn_gt, show_eval: bool):
     for a in data["churn_alerts"]:
         key = a["entity_id"] + "|" + a["alert_type"]
         inv = inv_map.get(key, {}).get("investigation", {})
+        brief = build_churn_briefing(a, inv)
         rows.append(
             {
                 "account_id": a["entity_id"],
                 "alert_type": a["alert_type"],
                 "severity": a["severity"],
+                "plain_english": brief["headline"],
                 "risk_score": inv.get("risk_score"),
                 "confidence": inv.get("confidence"),
                 "current": a["current_value"],
@@ -334,28 +442,42 @@ def churn_page(data, churn_df, churn_gt, show_eval: bool):
 
     account = st.selectbox("Account", options=list(dict.fromkeys(table["account_id"].tolist())))
     account_alerts = [a for a in data["churn_alerts"] if a["entity_id"] == account]
-    st.subheader("Detected warning signals")
-    st.json(account_alerts)
+    alert_labels = [f"{a['alert_type']} ({a['severity']})" for a in account_alerts]
+    chosen = st.selectbox("Signal", alert_labels) if alert_labels else None
+    alert = account_alerts[alert_labels.index(chosen)] if chosen else account_alerts[0]
+    inv = inv_map.get(alert["entity_id"] + "|" + alert["alert_type"], {}).get("investigation", {})
+    brief = build_churn_briefing(alert, inv)
 
-    if not churn_df.empty:
-        hist = churn_df[churn_df["account_id"] == account].sort_values("date")
-        fig = px.line(
-            hist,
-            x="date",
-            y=["weekly_sessions", "active_users", "key_feature_adoption", "nps_score"],
-            title=f"Metric trends — {account}",
-        )
-        fig.update_layout(paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", font_color="#e8eef5")
-        st.plotly_chart(fig, use_container_width=True)
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("Current", f"{float(alert['current_value']):.2f}")
+    m2.metric("Expected", f"{float(alert['expected_value']):.2f}")
+    m3.metric("Severity", str(alert.get("severity")))
+    m4.metric("Risk score", f"{brief.get('risk_score') if brief.get('risk_score') is not None else '—'}")
 
-    account_inv = [row for row in data["churn_investigations"] if row.get("alert", {}).get("entity_id") == account]
-    if account_inv:
-        inv = account_inv[0]["investigation"]
-        st.subheader("Agent explanation")
-        st.write(inv.get("evidence", []))
-        st.write("Likely causes:", inv.get("likely_causes", []))
-        st.success(f"Recommended CSM action: {inv.get('recommended_csm_action')}")
-        st.caption(f"Confidence={inv.get('confidence')} · Limitations: {inv.get('data_limitations')}")
+    left, right = st.columns([1.15, 1])
+    with left:
+        st.subheader("Trend")
+        if not churn_df.empty:
+            hist = churn_df[churn_df["account_id"] == account].sort_values("date")
+            metrics = [m for m in (alert.get("metrics_involved") or []) if m in hist.columns]
+            if not metrics:
+                metrics = [c for c in ["weekly_sessions", "active_users", "key_feature_adoption", "nps_score"] if c in hist.columns]
+            fig = px.line(
+                hist,
+                x="date",
+                y=metrics,
+                title=f"{brief['headline']} — {account}",
+            )
+            fig = _add_anomaly_window(fig, alert.get("start_date"), alert.get("end_date"))
+            st.plotly_chart(_style_chart(fig), use_container_width=True)
+        else:
+            st.info("No metric history loaded.")
+        with st.expander("Detector details (raw)"):
+            st.json(alert)
+
+    with right:
+        st.subheader("Brief")
+        _render_briefing_panel(brief)
 
     if show_eval and not churn_gt.empty:
         st.subheader("Ground-truth label")
@@ -364,6 +486,11 @@ def churn_page(data, churn_df, churn_gt, show_eval: bool):
 
 def media_page(data, media_df, media_gt, show_eval: bool):
     st.title("Campaign Anomalies")
+    st.markdown(
+        '<div class="ss-banner">Media brief in plain English: anomaly → opportunity → '
+        "recommended action → next steps → expected impact (same shape as a CSM monthly review).</div>",
+        unsafe_allow_html=True,
+    )
     rows = []
     inv_map = {
         row["alert"]["entity_id"] + "|" + row["alert"]["alert_type"]: row
@@ -373,11 +500,13 @@ def media_page(data, media_df, media_gt, show_eval: bool):
     for a in data["media_alerts"]:
         key = a["entity_id"] + "|" + a["alert_type"]
         inv = inv_map.get(key, {}).get("investigation", {})
+        brief = build_media_briefing(a, inv)
         rows.append(
             {
                 "campaign_id": a["entity_id"],
                 "alert_type": a["alert_type"],
                 "severity": a["severity"],
+                "plain_english": brief["headline"],
                 "current": a["current_value"],
                 "expected": a["expected_value"],
                 "confidence": inv.get("confidence"),
@@ -392,30 +521,63 @@ def media_page(data, media_df, media_gt, show_eval: bool):
 
     campaign = st.selectbox("Campaign", options=list(dict.fromkeys(table["campaign_id"].tolist())))
     camp_alerts = [a for a in data["media_alerts"] if a["entity_id"] == campaign]
-    st.subheader("Actual vs expected / supporting calculations")
-    st.json(camp_alerts)
+    alert_labels = [f"{a['alert_type']} ({a['severity']})" for a in camp_alerts]
+    chosen = st.selectbox("Anomaly", alert_labels) if alert_labels else None
+    alert = camp_alerts[alert_labels.index(chosen)] if chosen else camp_alerts[0]
+    inv = inv_map.get(alert["entity_id"] + "|" + alert["alert_type"], {}).get("investigation", {})
+    brief = build_media_briefing(alert, inv)
 
-    if not media_df.empty:
-        hist = media_df[media_df["campaign_id"] == campaign].sort_values("date")
-        fig = px.line(
-            hist,
-            x="date",
-            y=["spend", "conversions", "cpc", "conversion_rate", "frequency"],
-            title=f"Time series — {campaign}",
-        )
-        fig.update_layout(paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", font_color="#e8eef5")
-        st.plotly_chart(fig, use_container_width=True)
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("Current", f"{float(alert['current_value']):.2f}")
+    m2.metric("Expected", f"{float(alert['expected_value']):.2f}")
+    m3.metric("Severity", str(alert.get("severity")))
+    m4.metric("Delta", brief.get("what_changed", "—"))
 
-    camp_inv = [row for row in data["media_investigations"] if row.get("alert", {}).get("entity_id") == campaign]
-    if camp_inv:
-        inv = camp_inv[0]["investigation"]
-        st.subheader("Agent investigation")
-        st.write(inv.get("anomaly_summary"))
-        st.write(inv.get("evidence", []))
-        st.write("Likely causes:", inv.get("likely_causes", []))
-        st.warning(f"Recommended action: {inv.get('recommended_action')}")
-        if inv.get("requires_immediate_human_review"):
-            st.error("Immediate human review required (advisory — no automated changes).")
+    left, right = st.columns([1.15, 1])
+    with left:
+        st.subheader("Trend")
+        if not media_df.empty:
+            hist = media_df[media_df["campaign_id"] == campaign].sort_values("date")
+            metrics = [m for m in (alert.get("metrics_involved") or []) if m in hist.columns]
+            if not metrics:
+                metrics = [c for c in ["spend", "conversions", "cpc", "conversion_rate", "frequency"] if c in hist.columns]
+            # Prefer a focused dual-axis style story when spend + conversions both present
+            fig = px.line(
+                hist,
+                x="date",
+                y=metrics[:4],
+                title=f"{brief['headline']} — {campaign}",
+            )
+            fig = _add_anomaly_window(fig, alert.get("start_date"), alert.get("end_date"))
+            st.plotly_chart(_style_chart(fig), use_container_width=True)
+
+            # Simple comparison bars for current vs expected on the primary metric
+            primary = (alert.get("metrics_involved") or ["value"])[0]
+            cmp = pd.DataFrame(
+                {
+                    "series": ["Expected", "Current"],
+                    "value": [float(alert["expected_value"]), float(alert["current_value"])],
+                }
+            )
+            fig2 = px.bar(
+                cmp,
+                x="series",
+                y="value",
+                title=f"{primary.replace('_', ' ').title()} — expected vs current",
+                color="series",
+                color_discrete_sequence=["#38bdf8", "#2dd4bf"],
+            )
+            st.plotly_chart(_style_chart(fig2), use_container_width=True)
+        else:
+            st.info("No metric history loaded.")
+        with st.expander("Detector details (raw)"):
+            st.json(alert)
+
+    with right:
+        st.subheader("Brief")
+        if brief.get("immediate_review"):
+            st.error("Immediate human review recommended — advisory only; no auto changes.")
+        _render_briefing_panel(brief)
 
     if show_eval and not media_gt.empty:
         st.subheader("Ground-truth label")

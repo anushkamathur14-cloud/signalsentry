@@ -90,6 +90,28 @@ def test_ask_assistant_mock_includes_trace():
     assert payload["mode"] == "mock"
 
 
+def test_media_briefing_has_action_impact_steps():
+    from src.presentation import build_media_briefing
+
+    brief = build_media_briefing(
+        {
+            "entity_id": "CMP-001",
+            "alert_type": "spend_spike_no_conversion_growth",
+            "severity": "high",
+            "current_value": 500.0,
+            "expected_value": 200.0,
+            "start_date": "2024-10-01",
+            "end_date": "2024-11-01",
+            "metrics_involved": ["spend", "conversions"],
+        }
+    )
+    assert "Spend rose" in brief["headline"]
+    assert brief["recommended_action"]
+    assert len(brief["next_steps"]) >= 2
+    assert len(brief["expected_impact"]) >= 1
+    assert brief["success_metrics"]
+
+
 def test_ground_truth_contains_injected_patterns(churn_data, media_data):
     _, churn_truth = churn_data
     _, media_truth = media_data
