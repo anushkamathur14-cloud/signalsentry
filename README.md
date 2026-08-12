@@ -50,6 +50,22 @@ pytest
 
 Dashboard: [http://localhost:8501](http://localhost:8501)
 
+### Streamlit Community Cloud demo
+
+Why Streamlit? The UI is a Streamlit app (`app.py`). Locally, `streamlit run app.py` opens that dashboard. For a **public demo**, deploy the same app to [Streamlit Community Cloud](https://share.streamlit.io):
+
+1. Open [share.streamlit.io](https://share.streamlit.io) and sign in with GitHub.
+2. **New app** → repo `anushkamathur14-cloud/signalsentry` → branch `main` → main file `app.py`.
+3. Deploy. First load generates synthetic data + mock investigations automatically (`USE_MOCK_MODEL=true`).
+4. Optional secrets (usually not required for the mock demo):
+
+```toml
+USE_MOCK_MODEL = "true"
+SEED = "42"
+```
+
+No live model key is needed for the demo. The cloud app does not call external providers unless you set `USE_MOCK_MODEL=false` and provide a compatible endpoint.
+
 ## Model configuration
 
 Environment variables (see `.env.example`):

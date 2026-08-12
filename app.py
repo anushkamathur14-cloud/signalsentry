@@ -3,11 +3,19 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import pandas as pd
 import plotly.express as px
 import streamlit as st
+
+# Demo / Streamlit Cloud defaults: mock investigators, no live provider calls.
+os.environ.setdefault("USE_MOCK_MODEL", "true")
+os.environ.setdefault("MODEL_BASE_URL", "https://inference.local/v1")
+os.environ.setdefault("MODEL_API_KEY", "nemoclaw-local-placeholder")
+os.environ.setdefault("MODEL_NAME", "nvidia/nemotron-mini")
+os.environ.setdefault("SEED", "42")
 
 from src.models.llm import load_model_config
 from src.paths import GENERATED_DIR, GROUND_TRUTH_DIR, OUTPUTS_DIR, ROOT
@@ -23,6 +31,21 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded",
 )
+
+
+def ensure_demo_data() -> None:
+    """Generate synthetic data + mock analysis if outputs are missing (Streamlit Cloud cold start)."""
+    alerts_path = OUTPUTS_DIR / "churn_alerts.json"
+    churn_path = GENERATED_DIR / "churn_metrics.parquet"
+    if alerts_path.exists() and churn_path.exists():
+        return
+    with st.spinner("Preparing synthetic demo data (first run only)..."):
+        from src.generation.generate_all import generate_all
+        from src.run_analysis import run_analysis
+
+        generate_all(seed=int(os.getenv("SEED", "42")))
+        run_analysis(max_investigations=25)
+
 
 # Visual direction: cool slate + teal (avoid purple/cream AI clichés)
 st.markdown(
@@ -291,12 +314,15 @@ def privacy_page():
 
 def main():
     st.sidebar.title("SignalSentry")
+    st.sidebar.caption("Synthetic demo · advisory recommendations only")
     page = st.sidebar.radio(
         "Navigate",
         ["Overview", "Customer Churn Risks", "Campaign Anomalies", "Privacy and Safety"],
     )
     show_eval = st.sidebar.toggle("Evaluation toggle (show ground truth)", value=False)
     st.sidebar.caption(f"Project root: {ROOT}")
+
+    ensure_demo_data()
 
     if not (OUTPUTS_DIR / "churn_alerts.json").exists():
         st.warning("No analysis outputs found. Run dataset generation and analysis first.")
