@@ -46,6 +46,48 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
+NAV_PAGES = (
+    "Home",
+    "Account risks",
+    "Campaign issues",
+    "How it works",
+    "Privacy",
+)
+
+
+def _ensure_nav_state() -> None:
+    if "nav_page" not in st.session_state:
+        st.session_state.nav_page = "Home"
+    if st.session_state.nav_page not in NAV_PAGES:
+        st.session_state.nav_page = "Home"
+    # Keep radio widget in sync when brand / ← Home jumps pages.
+    if "nav_radio" not in st.session_state:
+        st.session_state.nav_radio = st.session_state.nav_page
+    elif st.session_state.get("_force_nav_sync"):
+        st.session_state.nav_radio = st.session_state.nav_page
+        st.session_state._force_nav_sync = False
+
+
+def _go_home() -> None:
+    st.session_state.nav_page = "Home"
+    st.session_state.nav_radio = "Home"
+    st.session_state._force_nav_sync = True
+
+
+def _page_header(title: str, subtitle: str = "") -> None:
+    """Title row with an always-visible Home control."""
+    left, right = st.columns([5, 1])
+    with left:
+        st.title(title)
+        if subtitle:
+            st.caption(subtitle)
+    with right:
+        st.write("")
+        if title != "Home" and st.button("← Home", use_container_width=True, key=f"home_btn_{title}"):
+            _go_home()
+            st.rerun()
+
+
 
 def _read_generation_meta() -> dict:
     if not META_PATH.exists():
@@ -257,48 +299,48 @@ def _render_trace(trace: dict | None) -> None:
         st.json(trace)
 
 
-def synthetic_data_sidebar() -> None:
-    """Controls to mint a fresh synthetic demo dataset on demand."""
+def synthetic_data_sidebar_body() -> None:
+    """Demo-data controls (rendered inside the More options expander)."""
     meta = _read_generation_meta()
     if "demo_seed" not in st.session_state:
         st.session_state.demo_seed = int(meta.get("seed") or os.getenv("SEED", "42"))
 
-    with st.sidebar.expander("Advanced · demo data", expanded=False):
-        if meta:
-            st.caption(
-                f"Seed `{meta.get('seed')}` · {meta.get('n_accounts')} accounts · "
-                f"{meta.get('n_campaigns')} campaigns"
+    st.markdown("**Demo data**")
+    if meta:
+        st.caption(
+            f"Seed `{meta.get('seed')}` · {meta.get('n_accounts')} accounts · "
+            f"{meta.get('n_campaigns')} campaigns"
+        )
+    seed = st.number_input(
+        "World seed",
+        min_value=0,
+        max_value=2_147_483_647,
+        value=int(st.session_state.demo_seed),
+        step=1,
+    )
+    st.session_state.demo_seed = int(seed)
+    if st.button("Random seed", use_container_width=True):
+        st.session_state.demo_seed = secrets.randbelow(1_000_000)
+        st.rerun()
+    n_accounts = st.number_input(
+        "Accounts", min_value=20, max_value=200, value=int(meta.get("n_accounts") or 100)
+    )
+    n_campaigns = st.number_input(
+        "Campaigns", min_value=15, max_value=80, value=int(meta.get("n_campaigns") or 40)
+    )
+    max_inv = st.slider("Investigations to run", min_value=5, max_value=40, value=25)
+    if st.button("Regenerate world", type="primary", use_container_width=True):
+        with st.spinner(
+            f"Generating world (seed={st.session_state.demo_seed}) and re-running analysis..."
+        ):
+            regenerate_demo_world(
+                seed=int(st.session_state.demo_seed),
+                n_accounts=int(n_accounts),
+                n_campaigns=int(n_campaigns),
+                max_investigations=int(max_inv),
             )
-        seed = st.number_input(
-            "World seed",
-            min_value=0,
-            max_value=2_147_483_647,
-            value=int(st.session_state.demo_seed),
-            step=1,
-        )
-        st.session_state.demo_seed = int(seed)
-        if st.button("Random seed", use_container_width=True):
-            st.session_state.demo_seed = secrets.randbelow(1_000_000)
-            st.rerun()
-        n_accounts = st.number_input(
-            "Accounts", min_value=20, max_value=200, value=int(meta.get("n_accounts") or 100)
-        )
-        n_campaigns = st.number_input(
-            "Campaigns", min_value=15, max_value=80, value=int(meta.get("n_campaigns") or 40)
-        )
-        max_inv = st.slider("Investigations to run", min_value=5, max_value=40, value=25)
-        if st.button("Regenerate world", type="primary", use_container_width=True):
-            with st.spinner(
-                f"Generating world (seed={st.session_state.demo_seed}) and re-running analysis..."
-            ):
-                regenerate_demo_world(
-                    seed=int(st.session_state.demo_seed),
-                    n_accounts=int(n_accounts),
-                    n_campaigns=int(n_campaigns),
-                    max_investigations=int(max_inv),
-                )
-            st.success(f"Ready (seed {st.session_state.demo_seed}).")
-            st.rerun()
+        st.success(f"Ready (seed {st.session_state.demo_seed}).")
+        st.rerun()
 
 
 # Visual direction: cool slate + teal (avoid purple/cream AI clichés)
@@ -384,6 +426,14 @@ st.markdown(
         color: #fca5a5;
         border-color: rgba(248, 113, 113, 0.35);
       }
+      div[data-testid="stSidebar"] button[kind="secondary"] {
+        text-align: left;
+      }
+      .ss-brand-hint {
+        color: #93a4b5;
+        font-size: 0.75rem;
+        margin: -0.4rem 0 0.8rem 0;
+      }
     </style>
     """,
     unsafe_allow_html=True,
@@ -417,7 +467,7 @@ def _load_metrics():
 
 
 def overview_page(data, show_eval: bool):
-    st.title("Home")
+    _page_header("Home", "Flagged issues first — open a card or click a chart for detail.")
     st.markdown(
         '<div class="ss-banner">Early warning for churn and paid-media issues — '
         "plain English first, numbers underneath. Recommendations need a human.</div>",
@@ -1008,8 +1058,7 @@ def _plotly_with_source(
 
 
 def churn_page(data, churn_df, churn_gt, show_eval: bool):
-    st.title("Account risks")
-    st.caption("Read the summary. Open the sections below only if you want the numbers.")
+    _page_header("Account risks", "Pick a risk → read the story → open numbers only if you need them.")
 
     alerts = data["churn_alerts"]
     if not alerts:
@@ -1074,8 +1123,7 @@ def churn_page(data, churn_df, churn_gt, show_eval: bool):
 
 
 def media_page(data, media_df, media_gt, show_eval: bool):
-    st.title("Campaign issues")
-    st.caption("Read the summary. Charts and detector math are folded underneath.")
+    _page_header("Campaign issues", "Pick an issue → read the story → charts/source underneath.")
 
     alerts = data["media_alerts"]
     if not alerts:
@@ -1175,10 +1223,13 @@ def media_page(data, media_df, media_gt, show_eval: bool):
 
 def structure_page(data):
     """Portfolio explainer: full product structure in plain English + optional live traces."""
-    st.title("How it works")
+    _page_header(
+        "How it works",
+        "System map for SignalSentry — LangChain, NemoClaw, OpenClaw, and this demo.",
+    )
     st.markdown(
-        '<div class="ss-banner">What SignalSentry is, how the pieces connect, and where '
-        "LangChain / NemoClaw / OpenClaw fit. Scroll for an interactive trace playground.</div>",
+        '<div class="ss-banner">What the product does and how the pieces connect. '
+        "Optional live traces are at the bottom.</div>",
         unsafe_allow_html=True,
     )
     cfg = active_model_config()
@@ -1385,7 +1436,7 @@ The model never gets live CRM/ad-platform credentials. This demo is **synthetic-
 
 
 def privacy_page():
-    st.title("Privacy and Safety")
+    _page_header("Privacy", "Synthetic data only — what the app reads and logs.")
     cfg = active_model_config()
     confirm = synthetic_data_confirmation()
     st.success(confirm["message"])
@@ -1429,29 +1480,35 @@ def privacy_page():
 
 
 def main():
-    st.sidebar.title("SignalSentry")
+    _ensure_nav_state()
     if "byok_api_key" not in st.session_state:
         st.session_state.byok_api_key = ""
     if "byok_model" not in st.session_state:
         st.session_state.byok_model = PUBLIC_MODEL_CHOICES[0]
+
+    # Brand = Home
+    if st.sidebar.button("SignalSentry", use_container_width=True, key="brand_home"):
+        _go_home()
+        st.rerun()
+    st.sidebar.markdown(
+        '<p class="ss-brand-hint">Click the name to return Home</p>',
+        unsafe_allow_html=True,
+    )
 
     cfg = active_model_config()
     st.sidebar.caption("Mock demo" if cfg.use_mock else f"Live · {cfg.model_name}")
 
     page = st.sidebar.radio(
         "Go to",
-        [
-            "Home",
-            "Account risks",
-            "Campaign issues",
-            "How it works",
-            "Privacy",
-        ],
+        list(NAV_PAGES),
+        key="nav_radio",
     )
+    st.session_state.nav_page = page
+
     byok_sidebar()
-    with st.sidebar.expander("Developer options", expanded=False):
+    with st.sidebar.expander("More options", expanded=False):
         show_eval = st.toggle("Show ground truth", value=False)
-    synthetic_data_sidebar()
+        synthetic_data_sidebar_body()
 
     ensure_demo_data()
 
@@ -1463,6 +1520,7 @@ def main():
     ask_sidebar(data)
     churn_df, media_df, churn_gt, media_gt = _load_metrics()
 
+    page = st.session_state.nav_page
     if page == "Home":
         overview_page(data, show_eval)
     elif page == "Account risks":
