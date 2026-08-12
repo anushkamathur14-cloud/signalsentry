@@ -271,9 +271,8 @@ def ask_assistant(
             "LangChain `ChatOpenAI.with_structured_output` investigators. "
             "Locally, LangChain talks to NemoClaw at `https://inference.local/v1` (OpenClaw "
             "is the sandbox chat/gateway). On this hosted demo, investigations default to "
-            "mock templates. Paste your own NVIDIA API key in the sidebar (BYOK) to run the "
-            "same LangChain path against NVIDIA's public OpenAI-compatible endpoint and see "
-            "step traces on the Backend & Traces page."
+            "mock templates. Paste your own NVIDIA API key in the sidebar (BYOK), pick a "
+            "public model, and ask again — or open Structure for the full system map."
         )
         trace.add("mock_assistant_reply", "Returned architecture explanation without LLM", status="mock")
         trace.finish()
@@ -303,10 +302,42 @@ def ask_assistant(
             ),
         },
     ]
-    with timed_step(trace, "ChatOpenAI.invoke", f"base_url={cfg.base_url}") as step:
-        response = llm.invoke(messages)
-        answer = getattr(response, "content", None) or str(response)
-        step.status = "ok"
+    try:
+        with timed_step(trace, "ChatOpenAI.invoke", f"base_url={cfg.base_url} model={cfg.model_name}") as step:
+            response = llm.invoke(messages)
+            answer = getattr(response, "content", None) or str(response)
+            step.status = "ok"
+    except Exception as exc:  # noqa: BLE001 - portfolio UX must not crash on bad model/key
+        err = str(exc)
+        trace.add("ChatOpenAI.invoke", f"failed: {err}", status="error")
+        trace.finish()
+        answer = (
+            f"Live LangChain call failed against `{cfg.base_url}` with model `{cfg.model_name}`.\n\n"
+            f"**Error:** {err}\n\n"
+            "Try another model in the sidebar (BYOK → Model), confirm the key is an `nvapi-…` "
+            "NVIDIA key from build.nvidia.com, then ask again. Until then, use Structure for "
+            "the system map — mock answers still work without a key."
+        )
+        payload = {
+            "answer": answer,
+            "langchain_trace": trace.to_dict(),
+            "mode": "live-error",
+            "error": err,
+        }
+        append_investigation_log(
+            {
+                "domain": "assistant",
+                "entity_id": "portfolio-chat",
+                "alert_type": "architecture_qa",
+                "mode": "live-error",
+                "destination": cfg.destination_label,
+                "path_label": cfg.path_label,
+                "result": {"answer": answer, "error": err},
+                "langchain_trace": trace.to_dict(),
+            }
+        )
+        return answer, payload
+
     trace.finish()
     payload = {"answer": answer, "langchain_trace": trace.to_dict(), "mode": "live-langchain"}
     append_investigation_log(

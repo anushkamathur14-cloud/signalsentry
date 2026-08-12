@@ -13,7 +13,16 @@ NEMOCLAW_DEFAULT_BASE_URL = "https://inference.local/v1"
 NVIDIA_PUBLIC_BASE_URL = "https://integrate.api.nvidia.com/v1"
 NEMOCLAW_PLACEHOLDER_KEY = "nemoclaw-local-placeholder"
 DEFAULT_MODEL_NAME = "nvidia/nemotron-mini"
-DEFAULT_PUBLIC_MODEL_NAME = "nvidia/nemotron-3-super-120b-a12b"
+# Widely available on build.nvidia.com / integrate.api (avoid obscure IDs that 404).
+DEFAULT_PUBLIC_MODEL_NAME = "meta/llama-3.1-8b-instruct"
+PUBLIC_MODEL_CHOICES = (
+    "meta/llama-3.1-8b-instruct",
+    "meta/llama-3.3-70b-instruct",
+    "nvidia/llama-3.1-nemotron-70b-instruct",
+    "nvidia/nemotron-4-340b-instruct",
+    "google/gemma-2-9b-it",
+    "mistralai/mistral-small-24b-instruct",
+)
 
 
 @dataclass(frozen=True)
@@ -125,7 +134,11 @@ def load_model_config() -> ModelConfig:
     )
 
 
-def resolve_model_config(*, visitor_api_key: str | None = None) -> ModelConfig:
+def resolve_model_config(
+    *,
+    visitor_api_key: str | None = None,
+    visitor_model: str | None = None,
+) -> ModelConfig:
     """
     Resolve the effective model config for the dashboard.
 
@@ -139,9 +152,13 @@ def resolve_model_config(*, visitor_api_key: str | None = None) -> ModelConfig:
     if key:
         os.environ["SIGNAL_SENTRY_BYOK_ACTIVE"] = "1"
         os.environ["USE_MOCK_MODEL"] = "false"
-        # Clear hosted force-mock for this process so live calls proceed.
         os.environ.pop("SIGNAL_SENTRY_FORCE_MOCK", None)
-        model_name = os.getenv("MODEL_NAME_PUBLIC") or os.getenv("MODEL_NAME") or DEFAULT_PUBLIC_MODEL_NAME
+        chosen = (visitor_model or "").strip()
+        model_name = (
+            chosen
+            or os.getenv("MODEL_NAME_PUBLIC")
+            or DEFAULT_PUBLIC_MODEL_NAME
+        )
         base_url = os.getenv("MODEL_BASE_URL_PUBLIC", NVIDIA_PUBLIC_BASE_URL).strip()
         method = os.getenv("STRUCTURED_OUTPUT_METHOD", "json_mode").strip() or "json_mode"
         return ModelConfig(

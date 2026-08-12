@@ -14,6 +14,7 @@ import streamlit as st
 # Local / NemoClaw live mode is controlled by .env (USE_MOCK_MODEL=false).
 # Streamlit Community Cloud cannot reach inference.local — default mock until BYOK.
 from src.models.llm import (
+    PUBLIC_MODEL_CHOICES,
     force_mock_if_hosted_demo,
     is_hosted_demo_environment,
     load_model_config,
@@ -82,31 +83,48 @@ def regenerate_demo_world(
 
 def active_model_config():
     """Session-aware config: BYOK live path, else hosted mock / local .env."""
-    return resolve_model_config(visitor_api_key=st.session_state.get("byok_api_key") or None)
+    return resolve_model_config(
+        visitor_api_key=st.session_state.get("byok_api_key") or None,
+        visitor_model=st.session_state.get("byok_model") or None,
+    )
 
 
 def byok_sidebar() -> None:
     """Portfolio policy: your key is never required; visitors may bring their own."""
+    if "byok_model" not in st.session_state:
+        st.session_state.byok_model = PUBLIC_MODEL_CHOICES[0]
+
     with st.sidebar.expander("Live LangChain (optional)", expanded=False):
         st.caption(
-            "Default is mock (no API spend). Paste your own NVIDIA key for live LangChain. "
-            "Session-only — not saved to the repo."
+            "Default is mock (no API spend). Paste an `nvapi-…` key from build.nvidia.com, "
+            "pick a model, then ask from any page."
         )
         key = st.text_input(
-            "NVIDIA API key (BYOK)",
+            "NVIDIA API key",
             type="password",
             value=st.session_state.get("byok_api_key", ""),
             help="Create a key at build.nvidia.com.",
             key="byok_input",
         )
+        model = st.selectbox(
+            "Model",
+            options=list(PUBLIC_MODEL_CHOICES),
+            index=list(PUBLIC_MODEL_CHOICES).index(st.session_state.byok_model)
+            if st.session_state.byok_model in PUBLIC_MODEL_CHOICES
+            else 0,
+            help="If you see NotFoundError, switch models — availability varies by account.",
+        )
         cols = st.columns(2)
         if cols[0].button("Use key", use_container_width=True):
             st.session_state.byok_api_key = key.strip()
+            st.session_state.byok_model = model
             st.rerun()
         if cols[1].button("Clear key", use_container_width=True):
             st.session_state.byok_api_key = ""
             os.environ.pop("SIGNAL_SENTRY_BYOK_ACTIVE", None)
             st.rerun()
+        # Keep model selection even before Use key (for next apply)
+        st.session_state.byok_model = model
         cfg = active_model_config()
         if cfg.use_mock:
             st.caption("Active: mock")
@@ -114,6 +132,46 @@ def byok_sidebar() -> None:
             st.caption(f"Active: NemoClaw · {cfg.model_name}")
         else:
             st.caption(f"Active: BYOK · {cfg.model_name}")
+
+
+def _inline_ask_panel(data, *, page_key: str, hint: str = "Ask about this page or the backend…") -> None:
+    """Compact Ask widget embedded on content pages (not a separate nav item)."""
+    with st.expander("Ask about this", expanded=False):
+        cfg = active_model_config()
+        mode = "mock" if cfg.use_mock else f"live · {cfg.model_name}"
+        st.caption(f"Path: `{cfg.path_label}` ({mode}). Key stays in the sidebar session only.")
+
+        history_key = f"ask_history_{page_key}"
+        if history_key not in st.session_state:
+            st.session_state[history_key] = []
+
+        for msg in st.session_state[history_key]:
+            with st.chat_message(msg["role"]):
+                st.markdown(msg["content"])
+                if msg.get("trace"):
+                    with st.expander("LangChain trace"):
+                        _render_trace(msg["trace"])
+
+        prompt = st.chat_input(hint, key=f"ask_input_{page_key}")
+        if prompt:
+            st.session_state[history_key].append({"role": "user", "content": prompt})
+            context = {
+                "page": page_key,
+                "churn_alert_count": len(data.get("churn_alerts") or []),
+                "media_alert_count": len(data.get("media_alerts") or []),
+                "path_label": cfg.path_label,
+                "hosted": is_hosted_demo_environment(),
+            }
+            with st.spinner("Thinking…"):
+                answer, payload = ask_assistant(prompt, config=cfg, context=context)
+            st.session_state[history_key].append(
+                {
+                    "role": "assistant",
+                    "content": answer,
+                    "trace": payload.get("langchain_trace"),
+                }
+            )
+            st.rerun()
 
 
 def _render_trace(trace: dict | None) -> None:
@@ -291,7 +349,7 @@ def _load_metrics():
 
 
 def overview_page(data, show_eval: bool):
-    st.title("SignalSentry")
+    st.title("Home")
     st.markdown(
         '<div class="ss-banner">Early warning for churn and paid-media issues — '
         "plain English first, numbers underneath. Recommendations need a human.</div>",
@@ -582,6 +640,12 @@ def overview_page(data, show_eval: bool):
     if show_eval and data["evaluation"]:
         with st.expander("Evaluation vs ground truth", expanded=False):
             st.json(data["evaluation"])
+
+    _inline_ask_panel(
+        data,
+        page_key="overview",
+        hint="e.g. What should I look at first on Overview?",
+    )
 
 
 def _severity_chip(severity: str) -> str:
@@ -934,6 +998,11 @@ def churn_page(data, churn_df, churn_gt, show_eval: bool):
         chart_factory=_chart,
         extra_expanders=extras,
     )
+    _inline_ask_panel(
+        data,
+        page_key="churn",
+        hint="e.g. Why does gradual usage decline matter?",
+    )
 
 
 def media_page(data, media_df, media_gt, show_eval: bool):
@@ -1029,11 +1098,16 @@ def media_page(data, media_df, media_gt, show_eval: bool):
         chart_factory=_chart,
         extra_expanders=extras,
     )
+    _inline_ask_panel(
+        data,
+        page_key="media",
+        hint="e.g. What does creative fatigue mean for spend?",
+    )
 
 
 def structure_page(data):
     """Portfolio explainer: full product structure in plain English + optional live traces."""
-    st.title("Structure")
+    st.title("How it works")
     st.markdown(
         '<div class="ss-banner">What SignalSentry is, how the pieces connect, and where '
         "LangChain / NemoClaw / OpenClaw fit. Scroll for an interactive trace playground.</div>",
@@ -1106,12 +1180,12 @@ def structure_page(data):
     st.subheader("What each app page is for")
     pages = pd.DataFrame(
         [
-            {"Page": "Overview", "Purpose": "Flagged issues at a glance; click charts/cards for detail"},
+            {"Page": "Home", "Purpose": "Flagged issues at a glance; click charts/cards for detail"},
             {"Page": "Account risks", "Purpose": "One churn alert → English brief + chart/source"},
             {"Page": "Campaign issues", "Purpose": "One media anomaly → English brief + chart/source"},
-            {"Page": "Structure", "Purpose": "This map of the system"},
-            {"Page": "Ask", "Purpose": "Q&A about the architecture (mock or BYOK LangChain)"},
+            {"Page": "How it works", "Purpose": "Full system map (this page) + optional live traces"},
             {"Page": "Privacy", "Purpose": "Synthetic-only confirmation, files read, audit log"},
+            {"Page": "Ask about this", "Purpose": "Embedded on each page (expander) — mock or BYOK LangChain"},
         ]
     )
     st.dataframe(pages, use_container_width=True, hide_index=True)
@@ -1206,18 +1280,24 @@ The model never gets live CRM/ad-platform credentials. This demo is **synthetic-
                     supporting_calculations=alert_raw.get("supporting_calculations") or {},
                     domain=alert_raw.get("domain") or "churn",
                 )
-                with st.spinner("Investigating…"):
-                    result, preview = investigate_churn(alert, config=active_model_config())
-                st.success("Done.")
-                st.json(result.model_dump(mode="json"))
-                with st.expander("Inference payload"):
-                    st.json(preview)
+                try:
+                    with st.spinner("Investigating…"):
+                        result, preview = investigate_churn(alert, config=active_model_config())
+                    st.success("Done.")
+                    st.json(result.model_dump(mode="json"))
+                    with st.expander("Inference payload"):
+                        st.json(preview)
+                except Exception as exc:  # noqa: BLE001
+                    st.error(
+                        f"Live investigation failed: {exc}\n\n"
+                        "Try another model in Live LangChain (sidebar), or clear the key to use mock."
+                    )
 
         st.markdown("**Recent traces**")
         log_rows = read_investigation_log(limit=30)
         traced = [r for r in reversed(log_rows) if r.get("langchain_trace")]
         if not traced:
-            st.info("No traces yet. Run an investigation above or use Ask.")
+            st.info("No traces yet. Run an investigation above or use Ask about this.")
         else:
             for row in traced[:8]:
                 with st.expander(
@@ -1229,46 +1309,11 @@ The model never gets live CRM/ad-platform credentials. This demo is **synthetic-
                         st.markdown("**Payload preview**")
                         st.json(row["payload_preview"])
 
-
-def ask_page(data):
-    st.title("Ask SignalSentry")
-    st.markdown(
-        '<div class="ss-banner">Ask how the backend works. Mock answers need no key; '
-        "BYOK runs the same LangChain `ChatOpenAI` client used by investigators.</div>",
-        unsafe_allow_html=True,
+    _inline_ask_panel(
+        data,
+        page_key="structure",
+        hint="e.g. How does LangChain talk to NemoClaw?",
     )
-    cfg = active_model_config()
-    st.caption(f"Active path: `{cfg.path_label}` · model `{cfg.model_name}`")
-
-    if "chat_messages" not in st.session_state:
-        st.session_state.chat_messages = []
-
-    for msg in st.session_state.chat_messages:
-        with st.chat_message(msg["role"]):
-            st.markdown(msg["content"])
-            if msg.get("trace"):
-                with st.expander("LangChain trace"):
-                    _render_trace(msg["trace"])
-
-    prompt = st.chat_input("e.g. How does LangChain talk to NemoClaw?")
-    if prompt:
-        st.session_state.chat_messages.append({"role": "user", "content": prompt})
-        context = {
-            "churn_alert_count": len(data.get("churn_alerts") or []),
-            "media_alert_count": len(data.get("media_alerts") or []),
-            "path_label": cfg.path_label,
-            "hosted": is_hosted_demo_environment(),
-        }
-        with st.spinner("Thinking…"):
-            answer, payload = ask_assistant(prompt, config=cfg, context=context)
-        st.session_state.chat_messages.append(
-            {
-                "role": "assistant",
-                "content": answer,
-                "trace": payload.get("langchain_trace"),
-            }
-        )
-        st.rerun()
 
 
 def privacy_page():
@@ -1319,18 +1364,19 @@ def main():
     st.sidebar.title("SignalSentry")
     if "byok_api_key" not in st.session_state:
         st.session_state.byok_api_key = ""
+    if "byok_model" not in st.session_state:
+        st.session_state.byok_model = PUBLIC_MODEL_CHOICES[0]
 
     cfg = active_model_config()
-    st.sidebar.caption("Mock demo" if cfg.use_mock else f"Live · {cfg.path_label}")
+    st.sidebar.caption("Mock demo" if cfg.use_mock else f"Live · {cfg.model_name}")
 
     page = st.sidebar.radio(
         "Go to",
         [
-            "Overview",
+            "Home",
             "Account risks",
             "Campaign issues",
-            "Structure",
-            "Ask",
+            "How it works",
             "Privacy",
         ],
     )
@@ -1348,16 +1394,14 @@ def main():
     data = _load_outputs()
     churn_df, media_df, churn_gt, media_gt = _load_metrics()
 
-    if page == "Overview":
+    if page == "Home":
         overview_page(data, show_eval)
     elif page == "Account risks":
         churn_page(data, churn_df, churn_gt, show_eval)
     elif page == "Campaign issues":
         media_page(data, media_df, media_gt, show_eval)
-    elif page == "Structure":
+    elif page == "How it works":
         structure_page(data)
-    elif page == "Ask":
-        ask_page(data)
     else:
         privacy_page()
 

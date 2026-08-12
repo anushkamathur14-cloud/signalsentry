@@ -66,11 +66,15 @@ def test_byok_enables_live_nvidia_path(monkeypatch):
 
     monkeypatch.setenv("STREAMLIT_CLOUD", "1")
     monkeypatch.setenv("USE_MOCK_MODEL", "true")
-    cfg = resolve_model_config(visitor_api_key="nvapi-test-key")
+    cfg = resolve_model_config(
+        visitor_api_key="nvapi-test-key",
+        visitor_model="meta/llama-3.1-8b-instruct",
+    )
     assert cfg.use_mock is False
     assert cfg.path_label == "byok-nvidia-public"
     assert "nvidia.com" in cfg.base_url
     assert cfg.api_key == "nvapi-test-key"
+    assert cfg.model_name == "meta/llama-3.1-8b-instruct"
 
 
 def test_ask_assistant_mock_includes_trace():
