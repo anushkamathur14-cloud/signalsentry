@@ -8,7 +8,7 @@ from src.models.schemas import (
     RiskLevel,
     Severity,
 )
-from src.models.llm import ModelConfig, build_chat_model, load_model_config
+from src.models.llm import ModelConfig, build_chat_model, load_model_config, resolve_model_config
 
 __all__ = [
     "CampaignInvestigation",
@@ -20,4 +20,5 @@ __all__ = [
     "Severity",
     "build_chat_model",
     "load_model_config",
+    "resolve_model_config",
 ]

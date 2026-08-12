@@ -12,9 +12,13 @@ import plotly.express as px
 import streamlit as st
 
 # Local / NemoClaw live mode is controlled by .env (USE_MOCK_MODEL=false).
-# Streamlit Community Cloud cannot reach inference.local — force mock before any imports
-# that call load_model_config / dotenv.
-from src.models.llm import force_mock_if_hosted_demo, is_hosted_demo_environment, load_model_config
+# Streamlit Community Cloud cannot reach inference.local — default mock until BYOK.
+from src.models.llm import (
+    force_mock_if_hosted_demo,
+    is_hosted_demo_environment,
+    load_model_config,
+    resolve_model_config,
+)
 
 force_mock_if_hosted_demo()
 os.environ.setdefault("MODEL_BASE_URL", "https://inference.local/v1")
@@ -22,7 +26,9 @@ os.environ.setdefault("MODEL_API_KEY", "nemoclaw-local-placeholder")
 os.environ.setdefault("MODEL_NAME", "nvidia/nemotron-mini")
 os.environ.setdefault("SEED", "42")
 
+from src.agents.investigators import ask_assistant, investigate_churn
 from src.generation.generate_all import META_PATH, generate_all
+from src.models.schemas import CandidateAlert, Severity
 from src.paths import GENERATED_DIR, GROUND_TRUTH_DIR, OUTPUTS_DIR, ROOT
 from src.privacy import (
     list_readable_files,
@@ -55,8 +61,9 @@ def ensure_demo_data() -> None:
     if alerts_path.exists() and churn_path.exists():
         return
     with st.spinner("Preparing synthetic demo data (first run only)..."):
+        # Cold start always uses mock so Cloud boots without an API key.
         generate_all(seed=int(os.getenv("SEED", "42")))
-        run_analysis(max_investigations=25)
+        run_analysis(max_investigations=25, config=load_model_config())
 
 
 def regenerate_demo_world(
@@ -68,8 +75,62 @@ def regenerate_demo_world(
 ) -> None:
     """Build a new synthetic world and re-run detect → investigate → evaluate."""
     generate_all(seed=seed, n_accounts=n_accounts, n_campaigns=n_campaigns)
-    run_analysis(max_investigations=max_investigations)
+    run_analysis(max_investigations=max_investigations, config=active_model_config())
     _load_metrics.clear()
+
+
+def active_model_config():
+    """Session-aware config: BYOK live path, else hosted mock / local .env."""
+    return resolve_model_config(visitor_api_key=st.session_state.get("byok_api_key") or None)
+
+
+def byok_sidebar() -> None:
+    """Portfolio policy: your key is never required; visitors may bring their own."""
+    st.sidebar.markdown("---")
+    st.sidebar.subheader("Live LangChain (optional)")
+    st.sidebar.caption(
+        "Default demo is mock (no API spend). "
+        "Paste **your own** NVIDIA API key to run the real LangChain path. "
+        "The key stays in this browser session only — not written to the repo."
+    )
+    key = st.sidebar.text_input(
+        "NVIDIA API key (BYOK)",
+        type="password",
+        value=st.session_state.get("byok_api_key", ""),
+        help="Create a key at build.nvidia.com. Leave blank for mock investigators.",
+        key="byok_input",
+    )
+    cols = st.sidebar.columns(2)
+    if cols[0].button("Use key", use_container_width=True):
+        st.session_state.byok_api_key = key.strip()
+        st.rerun()
+    if cols[1].button("Clear key", use_container_width=True):
+        st.session_state.byok_api_key = ""
+        os.environ.pop("SIGNAL_SENTRY_BYOK_ACTIVE", None)
+        st.rerun()
+
+    cfg = active_model_config()
+    if cfg.use_mock:
+        st.sidebar.info("Path: **mock** · add BYOK key for live LangChain")
+    elif cfg.is_nemoclaw_route:
+        st.sidebar.success(f"Path: **NemoClaw** · `{cfg.model_name}`")
+    else:
+        st.sidebar.success(f"Path: **BYOK live** · `{cfg.model_name}`")
+
+
+def _render_trace(trace: dict | None) -> None:
+    if not trace:
+        st.caption("No LangChain trace for this run.")
+        return
+    st.markdown(
+        f"**Run** `{trace.get('run_id')}` · `{trace.get('kind')}` · path `{trace.get('path_label')}`"
+    )
+    for step in trace.get("steps") or []:
+        dur = step.get("duration_ms")
+        dur_s = f" · {dur} ms" if dur is not None else ""
+        st.markdown(f"- `{step.get('status')}` **{step.get('name')}** — {step.get('detail')}{dur_s}")
+    with st.expander("Full trace JSON"):
+        st.json(trace)
 
 
 def synthetic_data_sidebar() -> None:
@@ -361,22 +422,146 @@ def media_page(data, media_df, media_gt, show_eval: bool):
         st.dataframe(media_gt[media_gt["campaign_id"] == campaign], use_container_width=True)
 
 
+def backend_traces_page(data):
+    st.title("Backend & LangChain traces")
+    st.markdown(
+        '<div class="ss-banner">How SignalSentry actually runs: detectors are Python; '
+        "investigators are LangChain structured calls over an OpenAI-compatible route "
+        "(NemoClaw locally, or NVIDIA public BYOK on this hosted demo).</div>",
+        unsafe_allow_html=True,
+    )
+    cfg = active_model_config()
+
+    st.subheader("Architecture")
+    st.code(
+        "synthetic generators\n"
+        "        ↓\n"
+        "deterministic detectors (YAML thresholds, z-scores)  ← no LLM\n"
+        "        ↓\n"
+        "candidate alerts + metric context JSON\n"
+        "        ↓\n"
+        "LangChain ChatOpenAI.with_structured_output(Pydantic)\n"
+        "        ↓\n"
+        "NemoClaw inference.local  OR  NVIDIA integrate.api (BYOK)  OR  mock\n"
+        "        ↓\n"
+        "investigation report + audit / LangChain step trace",
+        language="text",
+    )
+    st.markdown(
+        """
+**NemoClaw / OpenClaw vs this site**
+- **NemoClaw** fronts `https://inference.local/v1` inside your local sandbox — that is the intended live backend.
+- **OpenClaw** is the local agent/chat gateway UI (`127.0.0.1:18789`). It is not embedded here (localhost-only, token-gated).
+- **This portfolio site** shows the same LangChain investigator contract. Default = mock. Optional BYOK = live NVIDIA endpoint with the same client code.
+"""
+    )
+
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Active path", cfg.path_label)
+    c2.metric("Model", cfg.model_name)
+    c3.metric("Mock?", str(cfg.use_mock))
+
+    st.subheader("Replay one investigation (shows a fresh trace)")
+    churn_alerts = data.get("churn_alerts") or []
+    if not churn_alerts:
+        st.info("No alerts yet — generate demo data first.")
+    else:
+        labels = [f"{a.get('entity_id')} · {a.get('alert_type')}" for a in churn_alerts[:20]]
+        pick = st.selectbox("Alert", labels)
+        if st.button("Run LangChain investigator on this alert", type="primary"):
+            alert_raw = churn_alerts[labels.index(pick)]
+            alert = CandidateAlert(
+                entity_id=alert_raw["entity_id"],
+                start_date=alert_raw["start_date"],
+                end_date=alert_raw["end_date"],
+                alert_type=alert_raw["alert_type"],
+                severity=Severity(alert_raw["severity"]),
+                metrics_involved=alert_raw.get("metrics_involved") or [],
+                current_value=float(alert_raw.get("current_value") or 0),
+                expected_value=float(alert_raw.get("expected_value") or 0),
+                supporting_calculations=alert_raw.get("supporting_calculations") or {},
+                domain=alert_raw.get("domain") or "churn",
+            )
+            with st.spinner("Investigating…"):
+                result, preview = investigate_churn(alert, config=active_model_config())
+            st.success("Done — scroll for payload + trace.")
+            st.json(result.model_dump(mode="json"))
+            with st.expander("Inference payload sent to LangChain"):
+                st.json(preview)
+
+    st.subheader("Recent LangChain traces")
+    log_rows = read_investigation_log(limit=30)
+    traced = [r for r in reversed(log_rows) if r.get("langchain_trace")]
+    if not traced:
+        st.info("No traces yet. Run an investigation above or ask a question on the Ask page.")
+    else:
+        for row in traced[:8]:
+            with st.expander(
+                f"{row.get('timestamp', '')} · {row.get('domain')} · {row.get('entity_id')} · {row.get('mode')}"
+            ):
+                _render_trace(row.get("langchain_trace"))
+                if row.get("payload_preview"):
+                    st.markdown("**Payload preview**")
+                    st.json(row["payload_preview"])
+
+
+def ask_page(data):
+    st.title("Ask SignalSentry")
+    st.markdown(
+        '<div class="ss-banner">Ask how the backend works. Mock answers need no key; '
+        "BYOK runs the same LangChain `ChatOpenAI` client used by investigators.</div>",
+        unsafe_allow_html=True,
+    )
+    cfg = active_model_config()
+    st.caption(f"Active path: `{cfg.path_label}` · model `{cfg.model_name}`")
+
+    if "chat_messages" not in st.session_state:
+        st.session_state.chat_messages = []
+
+    for msg in st.session_state.chat_messages:
+        with st.chat_message(msg["role"]):
+            st.markdown(msg["content"])
+            if msg.get("trace"):
+                with st.expander("LangChain trace"):
+                    _render_trace(msg["trace"])
+
+    prompt = st.chat_input("e.g. How does LangChain talk to NemoClaw?")
+    if prompt:
+        st.session_state.chat_messages.append({"role": "user", "content": prompt})
+        context = {
+            "churn_alert_count": len(data.get("churn_alerts") or []),
+            "media_alert_count": len(data.get("media_alerts") or []),
+            "path_label": cfg.path_label,
+            "hosted": is_hosted_demo_environment(),
+        }
+        with st.spinner("Thinking…"):
+            answer, payload = ask_assistant(prompt, config=cfg, context=context)
+        st.session_state.chat_messages.append(
+            {
+                "role": "assistant",
+                "content": answer,
+                "trace": payload.get("langchain_trace"),
+            }
+        )
+        st.rerun()
+
+
 def privacy_page():
     st.title("Privacy and Safety")
-    cfg = load_model_config()
+    cfg = active_model_config()
     confirm = synthetic_data_confirmation()
     st.success(confirm["message"])
 
     if cfg.use_mock:
         st.warning(
             "Currently in **mock** mode (no LangChain model calls). "
-            "For live NemoClaw + LangChain set `USE_MOCK_MODEL=false` and "
-            "`MODEL_BASE_URL=https://inference.local/v1`, then re-run analysis."
+            "Paste a NVIDIA API key in the sidebar (BYOK) for live LangChain, "
+            "or run locally inside NemoClaw with `USE_MOCK_MODEL=false`."
         )
     else:
         st.info(
-            f"**Live LangChain** → `{cfg.base_url}` · model `{cfg.model_name}` "
-            f"({'NemoClaw route' if cfg.is_nemoclaw_route else 'custom OpenAI-compatible endpoint'})."
+            f"**Live LangChain** → `{cfg.base_url}` · model `{cfg.model_name}` · path `{cfg.path_label}` "
+            f"({'NemoClaw route' if cfg.is_nemoclaw_route else 'OpenAI-compatible / BYOK'})."
         )
 
     st.write(
@@ -384,8 +569,10 @@ def privacy_page():
             "inference_destination": cfg.destination_label,
             "model_name": cfg.model_name,
             "mode": "mock" if cfg.use_mock else "live-langchain",
+            "path_label": cfg.path_label,
             "nemoclaw_route": cfg.is_nemoclaw_route,
             "synthetic_only": confirm["synthetic_only"],
+            "byok_session": bool(st.session_state.get("byok_api_key")),
         }
     )
     st.subheader("Files the application reads")
@@ -405,14 +592,28 @@ def privacy_page():
 
 def main():
     st.sidebar.title("SignalSentry")
-    cfg = load_model_config()
-    if cfg.use_mock or is_hosted_demo_environment():
-        st.sidebar.caption("Mode: mock demo (Streamlit Cloud / offline)")
+    if "byok_api_key" not in st.session_state:
+        st.session_state.byok_api_key = ""
+
+    byok_sidebar()
+    cfg = active_model_config()
+    if cfg.use_mock:
+        st.sidebar.caption("Mode: mock demo — optional BYOK for live LangChain")
+    elif cfg.is_nemoclaw_route:
+        st.sidebar.caption(f"Mode: live NemoClaw → {cfg.base_url}")
     else:
-        st.sidebar.caption(f"Mode: live LangChain → {cfg.base_url}")
+        st.sidebar.caption(f"Mode: live BYOK → {cfg.base_url}")
+
     page = st.sidebar.radio(
         "Navigate",
-        ["Overview", "Customer Churn Risks", "Campaign Anomalies", "Privacy and Safety"],
+        [
+            "Overview",
+            "Customer Churn Risks",
+            "Campaign Anomalies",
+            "Backend & Traces",
+            "Ask SignalSentry",
+            "Privacy and Safety",
+        ],
     )
     show_eval = st.sidebar.toggle("Evaluation toggle (show ground truth)", value=False)
     st.sidebar.caption(f"Project root: {ROOT}")
@@ -433,6 +634,10 @@ def main():
         churn_page(data, churn_df, churn_gt, show_eval)
     elif page == "Campaign Anomalies":
         media_page(data, media_df, media_gt, show_eval)
+    elif page == "Backend & Traces":
+        backend_traces_page(data)
+    elif page == "Ask SignalSentry":
+        ask_page(data)
     else:
         privacy_page()
 

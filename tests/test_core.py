@@ -52,6 +52,7 @@ def test_streamlit_cloud_env_forces_mock_even_if_live_requested(monkeypatch):
     from src.models.llm import force_mock_if_hosted_demo, load_model_config
 
     monkeypatch.setenv("STREAMLIT_CLOUD", "1")
+    monkeypatch.delenv("SIGNAL_SENTRY_BYOK_ACTIVE", raising=False)
     monkeypatch.delenv("SIGNAL_SENTRY_FORCE_MOCK", raising=False)
     monkeypatch.setenv("USE_MOCK_MODEL", "false")
 
@@ -60,19 +61,33 @@ def test_streamlit_cloud_env_forces_mock_even_if_live_requested(monkeypatch):
     assert cfg.use_mock is True
 
 
-def test_mount_src_cwd_forces_mock(monkeypatch):
-    from pathlib import Path
+def test_byok_enables_live_nvidia_path(monkeypatch):
+    from src.models.llm import resolve_model_config
 
-    from src.models.llm import is_hosted_demo_environment
+    monkeypatch.setenv("STREAMLIT_CLOUD", "1")
+    monkeypatch.setenv("USE_MOCK_MODEL", "true")
+    cfg = resolve_model_config(visitor_api_key="nvapi-test-key")
+    assert cfg.use_mock is False
+    assert cfg.path_label == "byok-nvidia-public"
+    assert "nvidia.com" in cfg.base_url
+    assert cfg.api_key == "nvapi-test-key"
 
-    monkeypatch.delenv("STREAMLIT_SHARING_MODE", raising=False)
-    monkeypatch.delenv("STREAMLIT_RUNTIME_ENV", raising=False)
-    monkeypatch.delenv("STREAMLIT_CLOUD", raising=False)
-    monkeypatch.delenv("SIGNAL_SENTRY_FORCE_MOCK", raising=False)
-    monkeypatch.setattr(Path, "cwd", classmethod(lambda cls: Path("/mount/src/signalsentry")))
-    monkeypatch.setattr(Path, "is_dir", lambda self: str(self) == "/mount/src" or False)
 
-    assert is_hosted_demo_environment() is True
+def test_ask_assistant_mock_includes_trace():
+    from src.agents.investigators import ask_assistant
+    from src.models.llm import ModelConfig
+
+    cfg = ModelConfig(
+        base_url="https://inference.local/v1",
+        api_key="x",
+        model_name="mock",
+        use_mock=True,
+        path_label="mock",
+    )
+    answer, payload = ask_assistant("How does NemoClaw fit in?", config=cfg)
+    assert "LangChain" in answer
+    assert payload["langchain_trace"]["steps"]
+    assert payload["mode"] == "mock"
 
 
 def test_ground_truth_contains_injected_patterns(churn_data, media_data):

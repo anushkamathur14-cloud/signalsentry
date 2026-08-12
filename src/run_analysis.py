@@ -13,7 +13,7 @@ import pandas as pd
 from src.agents.investigators import investigate_campaign, investigate_churn
 from src.detection import detect_churn_alerts, detect_media_alerts, load_thresholds
 from src.evaluation import combine_evaluations, evaluate_detections
-from src.models.llm import load_model_config
+from src.models.llm import ModelConfig, load_model_config
 from src.models.schemas import CandidateAlert
 from src.paths import GENERATED_DIR, GROUND_TRUTH_DIR, OUTPUTS_DIR, SHOWCASE_DIR, ensure_data_dirs
 
@@ -38,9 +38,13 @@ def _write_json(path: Path, payload: Any) -> None:
     path.write_text(json.dumps(payload, indent=2, default=str), encoding="utf-8")
 
 
-def run_analysis(*, max_investigations: int | None = None) -> dict[str, Any]:
+def run_analysis(
+    *,
+    max_investigations: int | None = None,
+    config: ModelConfig | None = None,
+) -> dict[str, Any]:
     ensure_data_dirs()
-    cfg = load_model_config()
+    cfg = config or load_model_config()
     thresholds = load_thresholds()
 
     churn_path = GENERATED_DIR / "churn_metrics.parquet"
