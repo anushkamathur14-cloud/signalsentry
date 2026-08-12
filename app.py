@@ -307,9 +307,6 @@ def overview_page(data, show_eval: bool):
     c2.metric("Account risks", len(churn_alerts))
     c3.metric("Campaign issues", len(media_alerts))
 
-    st.subheader("Needs attention")
-    st.caption("Open Churn or Campaigns in the sidebar to act on one.")
-
     inv_churn = {
         row["alert"]["entity_id"] + "|" + row["alert"]["alert_type"]: row.get("investigation", {})
         for row in data["churn_investigations"]
@@ -321,77 +318,266 @@ def overview_page(data, show_eval: bool):
         if "alert" in row
     }
 
-    spotlight = []
+    issue_rows: list[dict] = []
     for a in churn_alerts:
-        brief = build_churn_briefing(a, inv_churn.get(a["entity_id"] + "|" + a["alert_type"], {}))
-        spotlight.append(
-            (
-                {"critical": 0, "high": 1, "medium": 2, "low": 3}.get(str(a.get("severity")).lower(), 9),
-                "Account",
-                a.get("entity_id"),
-                brief["headline"],
-                brief["recommended_action"],
-                a.get("severity"),
-            )
+        key = a["entity_id"] + "|" + a["alert_type"]
+        brief = build_churn_briefing(a, inv_churn.get(key, {}))
+        inv = inv_churn.get(key, {})
+        issue_rows.append(
+            {
+                "domain": "churn",
+                "kind": "Account",
+                "entity_id": a.get("entity_id"),
+                "alert_type": a.get("alert_type"),
+                "severity": a.get("severity"),
+                "headline": brief["headline"],
+                "insight": brief.get("insight"),
+                "opportunity": brief.get("opportunity"),
+                "recommended_action": brief.get("recommended_action"),
+                "next_steps": " · ".join(brief.get("next_steps") or []),
+                "expected_impact": " · ".join(brief.get("expected_impact") or []),
+                "risk_score": inv.get("risk_score"),
+                "confidence": inv.get("confidence"),
+                "current_value": a.get("current_value"),
+                "expected_value": a.get("expected_value"),
+                "window": brief.get("window"),
+                "metrics": ", ".join(a.get("metrics_involved") or []),
+                "_alert": a,
+                "_brief": brief,
+                "_sort": {"critical": 0, "high": 1, "medium": 2, "low": 3}.get(
+                    str(a.get("severity")).lower(), 9
+                ),
+            }
         )
     for a in media_alerts:
-        brief = build_media_briefing(a, inv_media.get(a["entity_id"] + "|" + a["alert_type"], {}))
-        spotlight.append(
-            (
-                {"critical": 0, "high": 1, "medium": 2, "low": 3}.get(str(a.get("severity")).lower(), 9),
-                "Campaign",
-                a.get("entity_id"),
-                brief["headline"],
-                brief["recommended_action"],
-                a.get("severity"),
-            )
+        key = a["entity_id"] + "|" + a["alert_type"]
+        brief = build_media_briefing(a, inv_media.get(key, {}))
+        inv = inv_media.get(key, {})
+        issue_rows.append(
+            {
+                "domain": "media",
+                "kind": "Campaign",
+                "entity_id": a.get("entity_id"),
+                "alert_type": a.get("alert_type"),
+                "severity": a.get("severity"),
+                "headline": brief["headline"],
+                "insight": brief.get("insight"),
+                "opportunity": brief.get("opportunity"),
+                "recommended_action": brief.get("recommended_action"),
+                "next_steps": " · ".join(brief.get("next_steps") or []),
+                "expected_impact": " · ".join(brief.get("expected_impact") or []),
+                "risk_score": None,
+                "confidence": inv.get("confidence"),
+                "current_value": a.get("current_value"),
+                "expected_value": a.get("expected_value"),
+                "window": brief.get("window"),
+                "metrics": ", ".join(a.get("metrics_involved") or []),
+                "_alert": a,
+                "_brief": brief,
+                "_sort": {"critical": 0, "high": 1, "medium": 2, "low": 3}.get(
+                    str(a.get("severity")).lower(), 9
+                ),
+            }
         )
-    spotlight.sort(key=lambda r: r[0])
-    for _, kind, entity, headline, action, sev in spotlight[:6]:
-        st.markdown(
-            f'<div class="ss-brief"><h4>{kind} · {entity} · {sev}</h4>'
-            f"<p><b>{headline}</b></p><p>{action}</p></div>",
-            unsafe_allow_html=True,
-        )
-    if not spotlight:
+    issue_rows.sort(key=lambda r: (r["_sort"], -(r.get("risk_score") or 0)))
+
+    if not issue_rows:
         st.info("No alerts yet — use Regenerate in the sidebar Advanced section if needed.")
+        return
 
-    with st.expander("Charts & distribution (optional)", expanded=False):
-        sev_rows = []
-        for domain, alerts in [("churn", churn_alerts), ("media", media_alerts)]:
-            for a in alerts:
-                sev_rows.append({"domain": domain, "severity": a.get("severity", "unknown")})
-        if sev_rows:
-            sev_df = pd.DataFrame(sev_rows)
-            fig = px.histogram(
-                sev_df,
-                x="severity",
-                color="domain",
-                barmode="group",
-                title="Alerts by severity",
-                color_discrete_sequence=["#2dd4bf", "#38bdf8"],
-            )
-            st.plotly_chart(_style_chart(fig), use_container_width=True)
+    issues_df = pd.DataFrame(
+        [{k: v for k, v in row.items() if not k.startswith("_")} for row in issue_rows]
+    )
 
-        risks = []
-        for row in data["churn_investigations"]:
-            inv = row.get("investigation", {})
-            risks.append(
-                {
-                    "account_id": inv.get("account_id"),
-                    "risk_score": inv.get("risk_score"),
-                }
+    st.subheader("Needs attention")
+    st.caption("Expand a card for the full brief, or click a chart bar below to filter the same list.")
+
+    # Quick picker for one deep dive
+    labels = [
+        f"{r['kind']} · {r['entity_id']} — {r['headline']} ({r['severity']})" for r in issue_rows
+    ]
+    pick = st.selectbox("Inspect a flagged issue", ["(browse cards below)"] + labels, index=0)
+    if pick != "(browse cards below)":
+        chosen = issue_rows[labels.index(pick)]
+        _render_story_summary(chosen["_brief"])
+        with st.expander("Detector source for this issue", expanded=True):
+            st.dataframe(
+                pd.DataFrame(
+                    [
+                        {
+                            "entity_id": chosen["entity_id"],
+                            "domain": chosen["domain"],
+                            "alert_type": chosen["alert_type"],
+                            "severity": chosen["severity"],
+                            "current_value": chosen["current_value"],
+                            "expected_value": chosen["expected_value"],
+                            "metrics": chosen["metrics"],
+                            "window": chosen["window"],
+                            "risk_score": chosen.get("risk_score"),
+                            "confidence": chosen.get("confidence"),
+                        }
+                    ]
+                ),
+                use_container_width=True,
+                hide_index=True,
             )
-        if risks:
-            rdf = pd.DataFrame(risks)
-            fig2 = px.histogram(
-                rdf,
-                x="risk_score",
-                nbins=12,
-                title="Churn risk score distribution",
-                color_discrete_sequence=["#2dd4bf"],
+            st.json(chosen["_alert"])
+
+    # Flagged cards — open for detail
+    for row in issue_rows[:8]:
+        title = f"{row['kind']} · {row['entity_id']} · {row['severity']} — {row['headline']}"
+        with st.expander(title, expanded=False):
+            _render_story_summary(row["_brief"])
+            st.markdown("**Source snapshot**")
+            st.dataframe(
+                pd.DataFrame(
+                    [
+                        {
+                            "entity_id": row["entity_id"],
+                            "alert_type": row["alert_type"],
+                            "severity": row["severity"],
+                            "current_value": row["current_value"],
+                            "expected_value": row["expected_value"],
+                            "metrics": row["metrics"],
+                            "window": row["window"],
+                            "risk_score": row.get("risk_score"),
+                            "confidence": row.get("confidence"),
+                        }
+                    ]
+                ),
+                use_container_width=True,
+                hide_index=True,
             )
-            st.plotly_chart(_style_chart(fig2), use_container_width=True)
+            with st.expander("Raw detector payload"):
+                st.json(row["_alert"])
+
+    st.subheader("Charts & distribution")
+    st.caption("Click a bar to see the flagged issues in that bucket.")
+
+    # Severity chart as explicit grouped bars (cleaner click → filter than histogram bins)
+    sev_counts = (
+        issues_df.groupby(["severity", "domain"], as_index=False)
+        .size()
+        .rename(columns={"size": "count"})
+    )
+    if not sev_counts.empty:
+        fig = px.bar(
+            sev_counts,
+            x="severity",
+            y="count",
+            color="domain",
+            barmode="group",
+            title="Alerts by severity",
+            color_discrete_sequence=["#2dd4bf", "#38bdf8"],
+            custom_data=["domain", "severity"],
+        )
+        event = st.plotly_chart(
+            _style_chart(fig),
+            use_container_width=True,
+            on_select="rerun",
+            selection_mode=("points", "box"),
+            key="overview_severity_chart",
+        )
+        points = _selection_points(event)
+        if points:
+            matched = []
+            for pt in points:
+                domain = None
+                severity = pt.get("x")
+                custom = pt.get("customdata")
+                if isinstance(custom, (list, tuple)) and len(custom) >= 2:
+                    domain, severity = custom[0], custom[1]
+                else:
+                    domain = pt.get("legendgroup") or pt.get("curve_number")
+                    # Map curve name if legendgroup is domain label
+                    if domain not in {"churn", "media"}:
+                        domain = pt.get("legendgroup")
+                subset = issues_df.copy()
+                if severity is not None:
+                    subset = subset[subset["severity"].astype(str) == str(severity)]
+                if domain in {"churn", "media"}:
+                    subset = subset[subset["domain"] == domain]
+                matched.append(subset)
+            if matched:
+                detail = pd.concat(matched).drop_duplicates(
+                    subset=["domain", "entity_id", "alert_type"]
+                )
+                st.markdown("**Issues in selected severity bar**")
+                st.dataframe(
+                    detail[
+                        [
+                            "kind",
+                            "entity_id",
+                            "severity",
+                            "headline",
+                            "recommended_action",
+                            "insight",
+                            "next_steps",
+                            "expected_impact",
+                            "current_value",
+                            "expected_value",
+                            "window",
+                        ]
+                    ],
+                    use_container_width=True,
+                    hide_index=True,
+                )
+
+    # Risk score — bar by rounded score so clicks map cleanly
+    risk_df = issues_df[issues_df["risk_score"].notna()].copy()
+    if not risk_df.empty:
+        risk_df["risk_bucket"] = risk_df["risk_score"].round(0).astype(int)
+        risk_counts = risk_df.groupby("risk_bucket", as_index=False).size().rename(
+            columns={"size": "count"}
+        )
+        fig2 = px.bar(
+            risk_counts,
+            x="risk_bucket",
+            y="count",
+            title="Churn risk score distribution",
+            color_discrete_sequence=["#2dd4bf"],
+            custom_data=["risk_bucket"],
+        )
+        fig2.update_layout(xaxis_title="risk_score")
+        event2 = st.plotly_chart(
+            _style_chart(fig2),
+            use_container_width=True,
+            on_select="rerun",
+            selection_mode=("points", "box"),
+            key="overview_risk_chart",
+        )
+        points2 = _selection_points(event2)
+        if points2:
+            buckets = set()
+            for pt in points2:
+                custom = pt.get("customdata")
+                if isinstance(custom, (list, tuple)) and custom:
+                    buckets.add(int(custom[0]))
+                elif pt.get("x") is not None:
+                    try:
+                        buckets.add(int(round(float(pt["x"]))))
+                    except (TypeError, ValueError):
+                        pass
+            if buckets:
+                detail = risk_df[risk_df["risk_bucket"].isin(buckets)]
+                st.markdown(f"**Accounts with risk score in {sorted(buckets)}**")
+                st.dataframe(
+                    detail[
+                        [
+                            "entity_id",
+                            "severity",
+                            "risk_score",
+                            "headline",
+                            "recommended_action",
+                            "insight",
+                            "next_steps",
+                            "expected_impact",
+                            "window",
+                        ]
+                    ],
+                    use_container_width=True,
+                    hide_index=True,
+                )
 
     if show_eval and data["evaluation"]:
         with st.expander("Evaluation vs ground truth", expanded=False):
