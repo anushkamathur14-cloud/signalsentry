@@ -1031,87 +1031,203 @@ def media_page(data, media_df, media_gt, show_eval: bool):
     )
 
 
-def backend_traces_page(data):
-    st.title("Backend & LangChain traces")
+def structure_page(data):
+    """Portfolio explainer: full product structure in plain English + optional live traces."""
+    st.title("Structure")
     st.markdown(
-        '<div class="ss-banner">How SignalSentry actually runs: detectors are Python; '
-        "investigators are LangChain structured calls over an OpenAI-compatible route "
-        "(NemoClaw locally, or NVIDIA public BYOK on this hosted demo).</div>",
+        '<div class="ss-banner">What SignalSentry is, how the pieces connect, and where '
+        "LangChain / NemoClaw / OpenClaw fit. Scroll for an interactive trace playground.</div>",
         unsafe_allow_html=True,
     )
     cfg = active_model_config()
 
-    st.subheader("Architecture")
+    st.subheader("In one sentence")
+    st.markdown(
+        "SignalSentry builds **synthetic** churn and paid-media data, finds anomalies with "
+        "**deterministic Python detectors**, then uses **LangChain** to write structured "
+        "investigation briefs — locally via **NemoClaw** (`inference.local`), or on this "
+        "hosted demo via **mock** / optional **BYOK**."
+    )
+
+    st.subheader("End-to-end flow")
     st.code(
-        "synthetic generators\n"
-        "        ↓\n"
-        "deterministic detectors (YAML thresholds, z-scores)  ← no LLM\n"
-        "        ↓\n"
-        "candidate alerts + metric context JSON\n"
-        "        ↓\n"
-        "LangChain ChatOpenAI.with_structured_output(Pydantic)\n"
-        "        ↓\n"
-        "NemoClaw inference.local  OR  NVIDIA integrate.api (BYOK)  OR  mock\n"
-        "        ↓\n"
-        "investigation report + audit / LangChain step trace",
+        "1  Synthetic generators   (seeded fake accounts + campaigns + ground-truth labels)\n"
+        "2  Detectors              (YAML thresholds, baselines, z-scores — no LLM)\n"
+        "3  Candidate alerts       (entity, window, current vs expected, metrics)\n"
+        "4  LangChain investigator (ChatOpenAI + with_structured_output → Pydantic)\n"
+        "5  Inference route        (NemoClaw local  |  NVIDIA BYOK  |  mock templates)\n"
+        "6  Dashboard briefs       (plain English → next steps → impact; charts + source)",
         language="text",
     )
+
+    st.subheader("Layers")
+    layers = pd.DataFrame(
+        [
+            {
+                "Layer": "Generation",
+                "Code": "src/generation/",
+                "Does": "Creates reproducible synthetic metrics and injected anomaly labels",
+                "LLM?": "No",
+            },
+            {
+                "Layer": "Detection",
+                "Code": "src/detection/",
+                "Does": "Flags unusual movement vs each entity’s own baseline",
+                "LLM?": "No",
+            },
+            {
+                "Layer": "Investigation",
+                "Code": "src/agents/",
+                "Does": "Turns an alert JSON into a structured CSM/media brief",
+                "LLM?": "Yes (or mock)",
+            },
+            {
+                "Layer": "Presentation",
+                "Code": "src/presentation/ + app.py",
+                "Does": "Plain-English cards, charts, click-to-source, Overview drill-downs",
+                "LLM?": "No",
+            },
+            {
+                "Layer": "Evaluation",
+                "Code": "src/evaluation/",
+                "Does": "Precision/recall vs synthetic ground truth (demo toggle)",
+                "LLM?": "No",
+            },
+            {
+                "Layer": "Privacy / audit",
+                "Code": "src/privacy/",
+                "Does": "Payload preview, investigation log, file inventory",
+                "LLM?": "No",
+            },
+        ]
+    )
+    st.dataframe(layers, use_container_width=True, hide_index=True)
+
+    st.subheader("What each app page is for")
+    pages = pd.DataFrame(
+        [
+            {"Page": "Overview", "Purpose": "Flagged issues at a glance; click charts/cards for detail"},
+            {"Page": "Account risks", "Purpose": "One churn alert → English brief + chart/source"},
+            {"Page": "Campaign issues", "Purpose": "One media anomaly → English brief + chart/source"},
+            {"Page": "Structure", "Purpose": "This map of the system"},
+            {"Page": "Ask", "Purpose": "Q&A about the architecture (mock or BYOK LangChain)"},
+            {"Page": "Privacy", "Purpose": "Synthetic-only confirmation, files read, audit log"},
+        ]
+    )
+    st.dataframe(pages, use_container_width=True, hide_index=True)
+
+    st.subheader("LangChain · NemoClaw · OpenClaw")
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        st.markdown(
+            '<div class="ss-brief"><h4>LangChain</h4><p>App library that calls an '
+            "OpenAI-compatible chat API and forces a Pydantic investigation schema "
+            "(<code>with_structured_output</code>). Same code path in every mode.</p></div>",
+            unsafe_allow_html=True,
+        )
+    with c2:
+        st.markdown(
+            '<div class="ss-brief"><h4>NemoClaw</h4><p>Local sandbox that exposes '
+            "<code>https://inference.local/v1</code> to your host model (e.g. Nemotron). "
+            "This is the intended <b>live</b> backend when you run SignalSentry inside the sandbox.</p></div>",
+            unsafe_allow_html=True,
+        )
+    with c3:
+        st.markdown(
+            '<div class="ss-brief"><h4>OpenClaw</h4><p>Local agent/chat gateway UI '
+            "(<code>127.0.0.1:18789</code>). Great for sandbox chatting; <b>not</b> embedded on "
+            "Streamlit Cloud because it only exists on your machine.</p></div>",
+            unsafe_allow_html=True,
+        )
+
     st.markdown(
         """
-**NemoClaw / OpenClaw vs this site**
-- **NemoClaw** fronts `https://inference.local/v1` inside your local sandbox — that is the intended live backend.
-- **OpenClaw** is the local agent/chat gateway UI (`127.0.0.1:18789`). It is not embedded here (localhost-only, token-gated).
-- **This portfolio site** shows the same LangChain investigator contract. Default = mock. Optional BYOK = live NVIDIA endpoint with the same client code.
+| Where you run | Investigation path |
+| --- | --- |
+| This Streamlit Cloud site (default) | **Mock** templates — no API spend |
+| Cloud + sidebar NVIDIA key (BYOK) | **Live LangChain** → `integrate.api.nvidia.com` |
+| Local / inside NemoClaw sandbox | **Live LangChain** → `inference.local` (NemoClaw) |
 """
     )
 
-    c1, c2, c3 = st.columns(3)
-    c1.metric("Active path", cfg.path_label)
-    c2.metric("Model", cfg.model_name)
-    c3.metric("Mock?", str(cfg.use_mock))
+    m1, m2, m3 = st.columns(3)
+    m1.metric("Active path now", cfg.path_label)
+    m2.metric("Model", cfg.model_name)
+    m3.metric("Mock?", str(cfg.use_mock))
 
-    st.subheader("Replay one investigation (shows a fresh trace)")
-    churn_alerts = data.get("churn_alerts") or []
-    if not churn_alerts:
-        st.info("No alerts yet — generate demo data first.")
-    else:
-        labels = [f"{a.get('entity_id')} · {a.get('alert_type')}" for a in churn_alerts[:20]]
-        pick = st.selectbox("Alert", labels)
-        if st.button("Run LangChain investigator on this alert", type="primary"):
-            alert_raw = churn_alerts[labels.index(pick)]
-            alert = CandidateAlert(
-                entity_id=alert_raw["entity_id"],
-                start_date=alert_raw["start_date"],
-                end_date=alert_raw["end_date"],
-                alert_type=alert_raw["alert_type"],
-                severity=Severity(alert_raw["severity"]),
-                metrics_involved=alert_raw.get("metrics_involved") or [],
-                current_value=float(alert_raw.get("current_value") or 0),
-                expected_value=float(alert_raw.get("expected_value") or 0),
-                supporting_calculations=alert_raw.get("supporting_calculations") or {},
-                domain=alert_raw.get("domain") or "churn",
-            )
-            with st.spinner("Investigating…"):
-                result, preview = investigate_churn(alert, config=active_model_config())
-            st.success("Done — scroll for payload + trace.")
-            st.json(result.model_dump(mode="json"))
-            with st.expander("Inference payload sent to LangChain"):
-                st.json(preview)
+    st.subheader("Data contract (what the LLM is allowed to see)")
+    st.markdown(
+        """
+1. **Detector alert** — entity id, alert type, severity, date window, current vs expected, supporting math  
+2. **Optional metric context** — last few synthetic rows for that entity  
+3. **System rules** — only use supplied JSON; label hypotheses; advisory recommendations only  
+4. **Structured response** — evidence, likely causes, recommended action, confidence, limitations  
 
-    st.subheader("Recent LangChain traces")
-    log_rows = read_investigation_log(limit=30)
-    traced = [r for r in reversed(log_rows) if r.get("langchain_trace")]
-    if not traced:
-        st.info("No traces yet. Run an investigation above or ask a question on the Ask page.")
-    else:
-        for row in traced[:8]:
-            with st.expander(
-                f"{row.get('timestamp', '')} · {row.get('domain')} · {row.get('entity_id')} · {row.get('mode')}"
-            ):
-                _render_trace(row.get("langchain_trace"))
-                if row.get("payload_preview"):
-                    st.markdown("**Payload preview**")
-                    st.json(row["payload_preview"])
+The model never gets live CRM/ad-platform credentials. This demo is **synthetic-only**.
+"""
+    )
+
+    st.subheader("Repo map")
+    st.code(
+        "signalsentry/\n"
+        "  app.py                 Streamlit UI\n"
+        "  config/thresholds.yaml Detector knobs\n"
+        "  src/generation/        Synthetic worlds + labels\n"
+        "  src/detection/         Anomaly detectors\n"
+        "  src/agents/            LangChain + mock investigators + traces\n"
+        "  src/presentation/      Plain-English briefing copy\n"
+        "  src/evaluation/        Score vs ground truth\n"
+        "  src/privacy/           Audit + payload preview\n"
+        "  data/generated/        Metrics parquet/csv\n"
+        "  data/ground_truth/     Injected labels\n"
+        "  data/outputs/          Alerts, investigations, audit log",
+        language="text",
+    )
+
+    with st.expander("Try a live investigation + LangChain trace", expanded=False):
+        st.caption("Runs the same investigator path the dashboard uses.")
+        churn_alerts = data.get("churn_alerts") or []
+        if not churn_alerts:
+            st.info("No alerts yet — generate demo data first.")
+        else:
+            labels = [f"{a.get('entity_id')} · {a.get('alert_type')}" for a in churn_alerts[:20]]
+            pick = st.selectbox("Alert to investigate", labels, key="structure_alert_pick")
+            if st.button("Run LangChain investigator", type="primary"):
+                alert_raw = churn_alerts[labels.index(pick)]
+                alert = CandidateAlert(
+                    entity_id=alert_raw["entity_id"],
+                    start_date=alert_raw["start_date"],
+                    end_date=alert_raw["end_date"],
+                    alert_type=alert_raw["alert_type"],
+                    severity=Severity(alert_raw["severity"]),
+                    metrics_involved=alert_raw.get("metrics_involved") or [],
+                    current_value=float(alert_raw.get("current_value") or 0),
+                    expected_value=float(alert_raw.get("expected_value") or 0),
+                    supporting_calculations=alert_raw.get("supporting_calculations") or {},
+                    domain=alert_raw.get("domain") or "churn",
+                )
+                with st.spinner("Investigating…"):
+                    result, preview = investigate_churn(alert, config=active_model_config())
+                st.success("Done.")
+                st.json(result.model_dump(mode="json"))
+                with st.expander("Inference payload"):
+                    st.json(preview)
+
+        st.markdown("**Recent traces**")
+        log_rows = read_investigation_log(limit=30)
+        traced = [r for r in reversed(log_rows) if r.get("langchain_trace")]
+        if not traced:
+            st.info("No traces yet. Run an investigation above or use Ask.")
+        else:
+            for row in traced[:8]:
+                with st.expander(
+                    f"{row.get('timestamp', '')} · {row.get('domain')} · "
+                    f"{row.get('entity_id')} · {row.get('mode')}"
+                ):
+                    _render_trace(row.get("langchain_trace"))
+                    if row.get("payload_preview"):
+                        st.markdown("**Payload preview**")
+                        st.json(row["payload_preview"])
 
 
 def ask_page(data):
@@ -1213,7 +1329,7 @@ def main():
             "Overview",
             "Account risks",
             "Campaign issues",
-            "How it works",
+            "Structure",
             "Ask",
             "Privacy",
         ],
@@ -1238,8 +1354,8 @@ def main():
         churn_page(data, churn_df, churn_gt, show_eval)
     elif page == "Campaign issues":
         media_page(data, media_df, media_gt, show_eval)
-    elif page == "How it works":
-        backend_traces_page(data)
+    elif page == "Structure":
+        structure_page(data)
     elif page == "Ask":
         ask_page(data)
     else:
